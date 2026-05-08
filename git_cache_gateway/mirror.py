@@ -4,6 +4,7 @@ import logging
 import shutil
 import time
 from pathlib import Path
+from collections.abc import Iterable
 
 from .config import Config
 from .gitlab_api import GitLabAPI
@@ -178,6 +179,66 @@ class MirrorManager:
         if not self._local_mirror_has_refs(mirror_dir):
             raise MirrorError(f"Local mirror has no refs after upstream fetch: {mapping.remote_url}")
 
+    def _safe_push_refspecs(self, mirror_dir: Path) -> tuple[list[str], list[str]]:
+        """Return GitLab-safe mirror refspecs and skipped refs.
+
+        `git push --mirror` pushes every ref namespace, including provider-
+        specific/internal refs such as GitLab.com's `refs/merge-requests/*`.
+        A GitLab server rejects those as hidden refs. Some upstream repositories
+        also carry problematic branch names such as `refs/heads/HEAD`, which
+        GitLab rejects as an invalid branch name.
+
+        For a cache used by normal clones/submodules, branches and tags are the
+        important public refs. Keep the push intentionally conservative.
+        """
+        result = run(
+            ["git", "for-each-ref", "--format=%(refname)", "refs/heads", "refs/tags"],
+            cwd=mirror_dir,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise MirrorError(
+                f"Failed to list local mirror refs\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+
+        refspecs: list[str] = []
+        skipped: list[str] = []
+        for line in result.stdout.splitlines():
+            ref = line.strip()
+            if not ref:
+                continue
+
+            if ref.startswith("refs/heads/"):
+                branch = ref[len("refs/heads/") :]
+                # Git itself can store this ref, but GitLab rejects it as a
+                # branch name. Pushing it also confuses default-branch handling.
+                if branch == "HEAD" or branch.endswith("/HEAD"):
+                    skipped.append(ref)
+                    continue
+                check = run(["git", "check-ref-format", ref], cwd=mirror_dir, check=False)
+                if check.returncode != 0:
+                    skipped.append(ref)
+                    continue
+                refspecs.append(f"+{ref}:{ref}")
+                continue
+
+            if ref.startswith("refs/tags/"):
+                check = run(["git", "check-ref-format", ref], cwd=mirror_dir, check=False)
+                if check.returncode != 0:
+                    skipped.append(ref)
+                    continue
+                refspecs.append(f"+{ref}:{ref}")
+                continue
+
+            skipped.append(ref)
+
+        return refspecs, skipped
+
+    @staticmethod
+    def _batches(values: list[str], size: int = 200) -> Iterable[list[str]]:
+        for index in range(0, len(values), size):
+            yield values[index : index + size]
+
     def _push_local_mirror_to_gitlab(self, mapping: RepoMapping) -> None:
         mirror_dir = self.local_mirror_dir(mapping)
         push_url = inject_basic_auth(
@@ -186,15 +247,31 @@ class MirrorManager:
             self.cfg.token,
         )
         git_env = self._gitlab_git_env()
-        self._mirror_log("mirror_push_start remote=%s project=%s", mapping.remote_url, mapping.gitlab_full_path)
-        result = run(["git", "push", "--mirror", push_url], cwd=mirror_dir, check=False, env_extra=git_env)
-        if result.returncode != 0:
-            raise MirrorError(
-                f"Failed to push mirror to GitLab {mapping.gitlab_http_url}\n"
-                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-            )
+        refspecs, skipped = self._safe_push_refspecs(mirror_dir)
+        if not refspecs:
+            raise MirrorError(f"Local mirror has no GitLab-safe refs to push: {mapping.remote_url}")
 
-        self._mirror_log("mirror_push_done remote=%s project=%s", mapping.remote_url, mapping.gitlab_full_path)
+        self._mirror_log(
+            "mirror_push_start remote=%s project=%s refs=%s skipped_refs=%s mode=safe-heads-tags",
+            mapping.remote_url,
+            mapping.gitlab_full_path,
+            len(refspecs),
+            len(skipped),
+        )
+        for skipped_ref in skipped[:20]:
+            self._mirror_log("mirror_push_skip_ref remote=%s ref=%s", mapping.remote_url, skipped_ref)
+        if len(skipped) > 20:
+            self._mirror_log("mirror_push_skip_ref_more remote=%s count=%s", mapping.remote_url, len(skipped) - 20)
+
+        for batch_no, batch in enumerate(self._batches(refspecs), start=1):
+            result = run(["git", "push", push_url, *batch], cwd=mirror_dir, check=False, env_extra=git_env)
+            if result.returncode != 0:
+                raise MirrorError(
+                    f"Failed to push mirror refs to GitLab {mapping.gitlab_http_url} batch={batch_no}\n"
+                    f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                )
+
+        self._mirror_log("mirror_push_done remote=%s project=%s refs=%s", mapping.remote_url, mapping.gitlab_full_path, len(refspecs))
         self._sync_gitlab_default_branch(mapping)
 
         if self.cfg.cache.enable_lfs:

@@ -712,6 +712,12 @@ Before using this with multiple users or CI runners:
 
 ## Version Notes
 
+### v0.2.7
+
+- Replaced raw `git push --mirror` with GitLab-safe branch/tag refspec pushes.
+- Excludes provider-internal refs such as `refs/merge-requests/*`.
+- Skips invalid branch pseudo-refs such as `refs/heads/HEAD`.
+
 ### v0.2.5
 
 * Added full GitLab API error bodies and request payloads to mirror job failures.
