@@ -3,13 +3,14 @@ from __future__ import annotations
 import logging
 import shutil
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from collections.abc import Iterable
 
 from .config import Config
 from .gitlab_api import GitLabAPI
 from .locks import file_lock
 from .urlmap import RepoMapping
+from . import __version__
 from .util import git_tls_env, inject_basic_auth, run
 
 
@@ -60,6 +61,50 @@ class MirrorManager:
     def local_mirror_dir(self, mapping: RepoMapping) -> Path:
         return self.cfg.cache.workdir / "mirrors" / mapping.provider / (mapping.repo_path + ".git")
 
+    def iter_local_mirror_mappings(self) -> Iterable[RepoMapping]:
+        """Yield mappings for local bare mirrors already present on disk.
+
+        This is used by maintenance commands to repair GitLab metadata for
+        mirrors that were created by older gateway versions. The Git data may
+        be valid while GitLab's project default_branch still points at a
+        non-existent branch, causing:
+
+            warning: remote HEAD refers to nonexistent ref, unable to checkout.
+
+        Walking local mirrors gives us the provider/repo path and lets us
+        repair those projects without requiring a fresh client request.
+        """
+        root = self.cfg.cache.workdir / "mirrors"
+        if not root.exists():
+            return
+
+        for mirror_dir in sorted(root.rglob("*.git")):
+            if not mirror_dir.is_dir() or not self._local_mirror_is_git_repo(mirror_dir):
+                continue
+            try:
+                relative = mirror_dir.relative_to(root)
+            except ValueError:
+                continue
+            parts = relative.parts
+            if len(parts) < 3:
+                # provider/owner/repo.git is the minimum useful shape.
+                continue
+            provider = parts[0]
+            if provider not in self.cfg.providers.hosts:
+                continue
+            repo_parts = list(parts[1:])
+            repo_parts[-1] = repo_parts[-1][:-4]
+            repo_path = str(PurePosixPath(*repo_parts))
+            remote_url = f"{self.cfg.providers.default_scheme}://{provider}/{repo_path}.git"
+            full_path = str(PurePosixPath(self.cfg.gitlab.root_group) / provider / repo_path)
+            yield RepoMapping(
+                provider=provider,
+                repo_path=repo_path,
+                remote_url=remote_url,
+                gitlab_full_path=full_path,
+                gitlab_http_url=f"{self.cfg.gitlab.base_url.rstrip('/')}/{full_path}.git",
+            )
+
     def _stamp_path(self, mapping: RepoMapping) -> Path:
         return self.cfg.cache.workdir / "stamps" / mapping.provider / (mapping.repo_path.replace("/", "__") + ".stamp")
 
@@ -107,23 +152,12 @@ class MirrorManager:
         return branches[0] if branches else None
 
     def _sync_gitlab_default_branch(self, mapping: RepoMapping) -> None:
-        mirror_dir = self.local_mirror_dir(mapping)
-        branch = self._local_mirror_default_branch(mirror_dir)
-        if not branch:
-            return
-        project = self.gitlab.get_project(mapping.gitlab_full_path)
-        if project is None:
-            raise MirrorError(f"GitLab project disappeared while syncing default branch: {mapping.gitlab_full_path}")
-        if project.default_branch == branch:
-            return
-        self._mirror_log(
-            "mirror_default_branch_update remote=%s project=%s old=%s new=%s",
-            mapping.remote_url,
-            mapping.gitlab_full_path,
-            project.default_branch,
-            branch,
-        )
-        self.gitlab.set_default_branch(project.id, branch)
+        if not self.repair_gitlab_default_branch(mapping):
+            self._mirror_log(
+                "mirror_default_branch_sync_skipped remote=%s project=%s",
+                mapping.remote_url,
+                mapping.gitlab_full_path,
+            )
 
     def _gitlab_mirror_has_refs(self, mapping: RepoMapping) -> bool:
         repo_url = inject_basic_auth(
@@ -133,6 +167,89 @@ class MirrorManager:
         )
         result = run(["git", "ls-remote", "--heads", "--tags", repo_url], check=False, env_extra=self._gitlab_git_env())
         return result.returncode == 0 and bool(result.stdout.strip())
+
+    def _gitlab_mirror_heads(self, mapping: RepoMapping) -> list[str]:
+        repo_url = inject_basic_auth(
+            mapping.gitlab_http_url,
+            self.cfg.gitlab.git_http_username,
+            self.cfg.token,
+        )
+        result = run(["git", "ls-remote", "--heads", repo_url], check=False, env_extra=self._gitlab_git_env())
+        if result.returncode != 0:
+            raise MirrorError(
+                f"Failed to list GitLab mirror heads {mapping.gitlab_http_url}\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+
+        heads: list[str] = []
+        prefix = "refs/heads/"
+        for line in result.stdout.splitlines():
+            parts = line.strip().split()
+            if len(parts) != 2 or not parts[1].startswith(prefix):
+                continue
+            branch = parts[1][len(prefix) :]
+            if branch and branch not in heads:
+                heads.append(branch)
+        return heads
+
+    def _choose_gitlab_default_branch(
+        self,
+        mapping: RepoMapping,
+        project_default: str | None,
+        gitlab_heads: list[str],
+    ) -> str | None:
+        if not gitlab_heads:
+            return None
+
+        if project_default in gitlab_heads:
+            return project_default
+
+        local_default = self._local_mirror_default_branch(self.local_mirror_dir(mapping))
+        if local_default in gitlab_heads:
+            return local_default
+
+        for preferred in ("main", "master"):
+            if preferred in gitlab_heads:
+                return preferred
+
+        return gitlab_heads[0]
+
+    def repair_gitlab_default_branch(self, mapping: RepoMapping, project=None) -> bool:
+        """Ensure GitLab advertises a cloneable HEAD for this mirror.
+
+        A mirror can have valid branches/tags while GitLab still advertises a
+        default branch that does not exist, especially when an empty project was
+        created before the first push or after a previous interrupted mirror run.
+        In that state `git clone` transfers objects successfully but ends with:
+
+            warning: remote HEAD refers to nonexistent ref, unable to checkout.
+
+        Repairing the GitLab project `default_branch` is cheap compared to a
+        clone and is safe to do on the request path for cache hits.
+        """
+        if project is None:
+            project = self.gitlab.get_project(mapping.gitlab_full_path)
+        if project is None:
+            return False
+
+        heads = self._gitlab_mirror_heads(mapping)
+        desired = self._choose_gitlab_default_branch(mapping, project.default_branch, heads)
+        if not desired:
+            return False
+
+        if project.default_branch == desired:
+            return True
+
+        self._mirror_log(
+            "mirror_default_branch_repair remote=%s project=%s old=%s new=%s heads=%s",
+            mapping.remote_url,
+            mapping.gitlab_full_path,
+            project.default_branch,
+            desired,
+            len(heads),
+        )
+        self.gitlab.set_default_branch(project.id, desired)
+        return True
 
     def gitlab_mirror_ready(self, mapping: RepoMapping) -> bool:
         """Cheap readiness check used on the HTTP request path.
@@ -144,7 +261,22 @@ class MirrorManager:
             project = self.gitlab.get_project(mapping.gitlab_full_path)
             if project is None:
                 return False
-            return self._gitlab_mirror_has_refs(mapping)
+            if not self._gitlab_mirror_has_refs(mapping):
+                return False
+            try:
+                self.repair_gitlab_default_branch(mapping, project=project)
+            except Exception as e:
+                # Do not make a populated mirror unusable just because HEAD
+                # repair failed. The background mirror worker will retry and
+                # the warning is less harmful than forcing every request to
+                # upstream while offline.
+                self._mirror_log(
+                    "mirror_default_branch_repair_failed remote=%s project=%s error=%r",
+                    mapping.remote_url,
+                    mapping.gitlab_full_path,
+                    e,
+                )
+            return True
         except Exception as e:
             self._mirror_log("mirror_ready_check_failed remote=%s project=%s error=%r", mapping.remote_url, mapping.gitlab_full_path, e)
             return False
@@ -313,8 +445,62 @@ class MirrorManager:
         """Blocking ensure for CLI and optional wait_for_mirror server mode."""
         return self.mirror_once(mapping, reason="sync-ensure")
 
+    def repair_default_branches(self, mappings: Iterable[RepoMapping] | None = None) -> dict[str, object]:
+        """Repair GitLab default_branch metadata for existing mirrors.
+
+        This fixes already-created mirror projects whose data is present but
+        whose GitLab default branch/advertised HEAD is stale or invalid. It is
+        intentionally safe: each project is repaired independently and failures
+        are returned in the result instead of stopping the whole maintenance run.
+        """
+        result: dict[str, object] = {
+            "seen": 0,
+            "repaired": 0,
+            "already_ok": 0,
+            "skipped": 0,
+            "failed": 0,
+            "errors": [],
+        }
+        selected = list(mappings) if mappings is not None else list(self.iter_local_mirror_mappings())
+        errors: list[str] = []
+
+        for mapping in selected:
+            result["seen"] = int(result["seen"]) + 1
+            try:
+                project = self.gitlab.get_project(mapping.gitlab_full_path)
+                if project is None:
+                    result["skipped"] = int(result["skipped"]) + 1
+                    errors.append(f"skip project_missing {mapping.gitlab_full_path}")
+                    continue
+                heads = self._gitlab_mirror_heads(mapping)
+                desired = self._choose_gitlab_default_branch(mapping, project.default_branch, heads)
+                if not desired:
+                    result["skipped"] = int(result["skipped"]) + 1
+                    errors.append(f"skip no_heads {mapping.gitlab_full_path}")
+                    continue
+                if project.default_branch == desired:
+                    result["already_ok"] = int(result["already_ok"]) + 1
+                    continue
+                self._mirror_log(
+                    "mirror_default_branch_repair remote=%s project=%s old=%s new=%s heads=%s",
+                    mapping.remote_url,
+                    mapping.gitlab_full_path,
+                    project.default_branch,
+                    desired,
+                    len(heads),
+                )
+                self.gitlab.set_default_branch(project.id, desired)
+                result["repaired"] = int(result["repaired"]) + 1
+            except Exception as e:
+                result["failed"] = int(result["failed"]) + 1
+                errors.append(f"fail {mapping.gitlab_full_path}: {e!r}")
+
+        result["errors"] = errors
+        return result
+
     def doctor(self) -> list[str]:
         lines: list[str] = []
+        lines.append(f"Version: {__version__}")
         lines.append(f"GitLab: {self.cfg.gitlab.base_url}")
         lines.append(f"Root group: {self.cfg.gitlab.root_group}")
         lines.append(f"Mirror visibility: {self.cfg.gitlab.visibility}")

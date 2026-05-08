@@ -166,6 +166,31 @@ def cmd_enforce_visibility(args: argparse.Namespace) -> int:
         print("note=some visibility updates were skipped by GitLab authorization/settings; use an owner/admin token or adjust GitLab visibility restrictions if all objects must become internal")
     return 1 if (args.fail_on_skipped and (counts.get("groups_failed") or counts.get("projects_failed"))) else 0
 
+def cmd_repair_default_branches(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    manager = MirrorManager(cfg)
+    mappings = None
+    if args.urls:
+        mappings = [
+            map_remote_url(
+                url,
+                cfg.providers.hosts,
+                cfg.gitlab.base_url,
+                cfg.gitlab.root_group,
+                cfg.providers.default_scheme,
+            )
+            for url in args.urls
+        ]
+    result = manager.repair_default_branches(mappings)
+    for key in ("seen", "repaired", "already_ok", "skipped", "failed"):
+        print(f"{key}={result[key]}")
+    errors = result.get("errors", [])
+    if errors:
+        print("errors:")
+        for err in errors:
+            print(f"  - {err}")
+    return 1 if result.get("failed") else 0
+
 def cmd_serve(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     run_server(cfg)
@@ -233,6 +258,10 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--strict", action="store_true", help="fail on the first GitLab API error instead of continuing best-effort")
     v.add_argument("--fail-on-skipped", action="store_true", help="return non-zero if any object could not be updated")
     v.set_defaults(func=cmd_enforce_visibility)
+
+    r = sub.add_parser("repair-default-branches", help="repair GitLab default_branch/remote HEAD for existing mirrors")
+    r.add_argument("urls", nargs="*", help="optional remote URLs to repair; if omitted, scans local mirror cache")
+    r.set_defaults(func=cmd_repair_default_branches)
 
     s = sub.add_parser("serve", help="run the HTTP cache gateway")
     s.set_defaults(func=cmd_serve)

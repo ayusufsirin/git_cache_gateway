@@ -712,6 +712,12 @@ Before using this with multiple users or CI runners:
 
 ## Version Notes
 
+### v0.2.8
+
+- Repairs GitLab mirror `default_branch` on cache-hit readiness checks.
+- Fixes clones that downloaded objects successfully but ended with `remote HEAD refers to nonexistent ref`.
+- Chooses the mirror default branch from the local upstream mirror when possible, otherwise falls back to an existing `main`, `master`, or the first available branch.
+
 ### v0.2.7
 
 - Replaced raw `git push --mirror` with GitLab-safe branch/tag refspec pushes.
