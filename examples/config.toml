@@ -34,6 +34,18 @@ update_if_older_than_seconds = 3600
 fail_on_update_error = false
 enable_lfs = false
 
+[git]
+# Git smart-HTTP tuning for background mirror clone/update/push jobs.
+# HTTP/1.1 plus a larger postBuffer avoids large-repo failures behind some
+# corporate proxies/TLS interception, e.g. curl 65 / unable to rewind RPC data.
+http_version = "HTTP/1.1"
+post_buffer = 524288000
+low_speed_limit = 0
+low_speed_time = 0
+operation_retries = 3
+retry_backoff_seconds = 5.0
+retry_backoff_multiplier = 2.0
+
 [server]
 listen_host = "0.0.0.0"
 listen_port = 8080

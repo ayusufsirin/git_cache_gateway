@@ -223,6 +223,17 @@ update_if_older_than_seconds = 3600
 fail_on_update_error = false
 enable_lfs = false
 
+[git]
+# Git smart-HTTP tuning used by background mirror clone/update/push jobs.
+# These defaults avoid large-repo failures behind some corporate proxies/TLS interception.
+http_version = "HTTP/1.1"
+post_buffer = 524288000
+low_speed_limit = 0
+low_speed_time = 0
+operation_retries = 3
+retry_backoff_seconds = 5.0
+retry_backoff_multiplier = 2.0
+
 [server]
 listen_host = "0.0.0.0"
 listen_port = 8080
@@ -399,6 +410,33 @@ verify_tls = false
 [upstream]
 verify_tls = false
 ```
+
+---
+
+## Git HTTP Transport Tuning
+
+Large repositories may fail during background mirror jobs when Git smart HTTP runs through a corporate proxy, TLS inspection device, or unstable HTTP/2 path. A typical failure is:
+
+```text
+error: unable to rewind rpc post data - try increasing http.postBuffer
+error: RPC failed; curl 65 seek callback returned error 1
+fatal: expected 'packfile'
+```
+
+The gateway applies Git transport settings per subprocess instead of relying on global Git config inside the container:
+
+```toml
+[git]
+http_version = "HTTP/1.1"
+post_buffer = 524288000
+low_speed_limit = 0
+low_speed_time = 0
+operation_retries = 3
+retry_backoff_seconds = 5.0
+retry_backoff_multiplier = 2.0
+```
+
+These options are used for background mirror clone, update, push, LFS, and internal `ls-remote` operations. The defaults intentionally force HTTP/1.1 and a larger POST buffer because this proved necessary for large repositories such as OpenSSL in proxied company networks. Set `http_version = ""` or `post_buffer = 0` to let Git use its defaults.
 
 ---
 
@@ -711,6 +749,19 @@ Before using this with multiple users or CI runners:
 ---
 
 ## Version Notes
+
+### v0.2.13
+
+- Added `[git]` transport tuning for mirror subprocesses.
+- Forces HTTP/1.1 and a larger `http.postBuffer` by default to handle large repositories behind corporate proxies/TLS inspection.
+- Added retry/backoff around clone, update, push, and LFS mirror operations.
+- Cleans failed partial clone directories before retrying.
+
+### v0.2.12
+
+- Initializes new GitLab mirror projects with the detected upstream default branch.
+- Repairs existing mirror projects whose Git smart-HTTP `HEAD` is missing or stale.
+- `repair-default-branches` scans GitLab mirror projects and no longer depends on local `/data` mirror cache.
 
 ### v0.2.8
 

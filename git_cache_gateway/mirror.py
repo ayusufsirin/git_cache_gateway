@@ -58,6 +58,64 @@ class MirrorManager:
         )
         return env or None
 
+    def _git_cmd(self, *args: str) -> list[str]:
+        """Build a git command with configured HTTP transport tuning.
+
+        These -c options are intentionally passed per command instead of using
+        global git config in the container. This keeps the gateway deterministic
+        and solves large-repository smart-HTTP failures such as:
+
+            unable to rewind rpc post data - try increasing http.postBuffer
+            RPC failed; curl 65 seek callback returned error 1
+        """
+        cmd = ["git"]
+        if self.cfg.git.http_version:
+            cmd += ["-c", f"http.version={self.cfg.git.http_version}"]
+        if self.cfg.git.post_buffer > 0:
+            cmd += ["-c", f"http.postBuffer={self.cfg.git.post_buffer}"]
+        if self.cfg.git.low_speed_limit >= 0:
+            cmd += ["-c", f"http.lowSpeedLimit={self.cfg.git.low_speed_limit}"]
+        if self.cfg.git.low_speed_time >= 0:
+            cmd += ["-c", f"http.lowSpeedTime={self.cfg.git.low_speed_time}"]
+        cmd.extend(args)
+        return cmd
+
+    def _run_git_with_retries(
+        self,
+        args: list[str],
+        *,
+        context: str,
+        cwd: Path | None = None,
+        env_extra: dict[str, str] | None = None,
+        cleanup_before_retry=None,
+    ):
+        attempts = max(1, self.cfg.git.operation_retries)
+        delay = self.cfg.git.retry_backoff_seconds
+        result = None
+        for attempt in range(1, attempts + 1):
+            if attempt > 1 and cleanup_before_retry is not None:
+                cleanup_before_retry()
+            result = run(self._git_cmd(*args), cwd=cwd, check=False, env_extra=env_extra)
+            if result.returncode == 0:
+                if attempt > 1:
+                    self._mirror_log("mirror_git_retry_success context=%s attempt=%s", context, attempt)
+                return result
+            if attempt >= attempts:
+                return result
+            self._mirror_log(
+                "mirror_git_retry context=%s attempt=%s/%s backoff_seconds=%s stderr=%r",
+                context,
+                attempt,
+                attempts,
+                delay,
+                result.stderr[-500:].strip(),
+            )
+            if delay > 0:
+                time.sleep(delay)
+            delay *= self.cfg.git.retry_backoff_multiplier
+        assert result is not None
+        return result
+
     def local_mirror_dir(self, mapping: RepoMapping) -> Path:
         return self.cfg.cache.workdir / "mirrors" / mapping.provider / (mapping.repo_path + ".git")
 
@@ -165,7 +223,7 @@ class MirrorManager:
             self.cfg.gitlab.git_http_username,
             self.cfg.token,
         )
-        result = run(["git", "ls-remote", "--heads", "--tags", repo_url], check=False, env_extra=self._gitlab_git_env())
+        result = run(self._git_cmd("ls-remote", "--heads", "--tags", repo_url), check=False, env_extra=self._gitlab_git_env())
         return result.returncode == 0 and bool(result.stdout.strip())
 
     def _gitlab_mirror_heads(self, mapping: RepoMapping) -> list[str]:
@@ -174,7 +232,7 @@ class MirrorManager:
             self.cfg.gitlab.git_http_username,
             self.cfg.token,
         )
-        result = run(["git", "ls-remote", "--heads", repo_url], check=False, env_extra=self._gitlab_git_env())
+        result = run(self._git_cmd("ls-remote", "--heads", repo_url), check=False, env_extra=self._gitlab_git_env())
         if result.returncode != 0:
             raise MirrorError(
                 f"Failed to list GitLab mirror heads {mapping.gitlab_http_url}\n"
@@ -200,7 +258,7 @@ class MirrorManager:
             self.cfg.token,
         )
         result = run(
-            ["git", "ls-remote", "--symref", repo_url, "HEAD"],
+            self._git_cmd("ls-remote", "--symref", repo_url, "HEAD"),
             check=False,
             env_extra=self._gitlab_git_env(),
         )
@@ -362,10 +420,19 @@ class MirrorManager:
 
         if not mirror_dir.exists():
             self._mirror_log("mirror_clone_start remote=%s local=%s", mapping.remote_url, mirror_dir)
-            result = run(["git", "clone", "--mirror", mapping.remote_url, str(mirror_dir)], check=False, env_extra=self._upstream_git_env())
-            if result.returncode != 0:
+
+            def cleanup_partial_clone() -> None:
                 if mirror_dir.exists() and not self._local_mirror_has_refs(mirror_dir):
                     shutil.rmtree(mirror_dir, ignore_errors=True)
+
+            result = self._run_git_with_retries(
+                ["clone", "--mirror", mapping.remote_url, str(mirror_dir)],
+                context=f"clone {mapping.remote_url}",
+                env_extra=self._upstream_git_env(),
+                cleanup_before_retry=cleanup_partial_clone,
+            )
+            if result.returncode != 0:
+                cleanup_partial_clone()
                 raise MirrorError(
                     f"Failed to clone upstream mirror {mapping.remote_url}\n"
                     f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -373,7 +440,12 @@ class MirrorManager:
             self._mirror_log("mirror_clone_done remote=%s local=%s", mapping.remote_url, mirror_dir)
         else:
             self._mirror_log("mirror_update_start remote=%s local=%s", mapping.remote_url, mirror_dir)
-            result = run(["git", "remote", "update", "--prune"], cwd=mirror_dir, check=False, env_extra=self._upstream_git_env())
+            result = self._run_git_with_retries(
+                ["remote", "update", "--prune"],
+                context=f"update {mapping.remote_url}",
+                cwd=mirror_dir,
+                env_extra=self._upstream_git_env(),
+            )
             if result.returncode != 0:
                 raise MirrorError(
                     f"Failed to update local mirror {mapping.remote_url}\n"
@@ -469,7 +541,7 @@ class MirrorManager:
             self._mirror_log("mirror_push_skip_ref_more remote=%s count=%s", mapping.remote_url, len(skipped) - 20)
 
         for batch_no, batch in enumerate(self._batches(refspecs), start=1):
-            result = run(["git", "push", push_url, *batch], cwd=mirror_dir, check=False, env_extra=git_env)
+            result = self._run_git_with_retries(["push", push_url, *batch], context=f"push {mapping.remote_url} batch={batch_no}", cwd=mirror_dir, env_extra=git_env)
             if result.returncode != 0:
                 raise MirrorError(
                     f"Failed to push mirror refs to GitLab {mapping.gitlab_http_url} batch={batch_no}\n"
@@ -480,9 +552,9 @@ class MirrorManager:
         self._sync_gitlab_default_branch(mapping)
 
         if self.cfg.cache.enable_lfs:
-            lfs_fetch = run(["git", "lfs", "fetch", "--all"], cwd=mirror_dir, check=False, env_extra=self._upstream_git_env())
+            lfs_fetch = self._run_git_with_retries(["lfs", "fetch", "--all"], context=f"lfs fetch {mapping.remote_url}", cwd=mirror_dir, env_extra=self._upstream_git_env())
             if lfs_fetch.returncode == 0:
-                lfs_push = run(["git", "lfs", "push", "--all", push_url], cwd=mirror_dir, check=False, env_extra=git_env)
+                lfs_push = self._run_git_with_retries(["lfs", "push", "--all", push_url], context=f"lfs push {mapping.remote_url}", cwd=mirror_dir, env_extra=git_env)
                 if lfs_push.returncode != 0:
                     raise MirrorError(
                         f"Git LFS push failed for {mapping.remote_url}\n"
@@ -599,6 +671,10 @@ class MirrorManager:
         lines.append(f"Background max pending jobs: {self.cfg.background.max_pending_jobs}")
         lines.append(f"GitLab TLS verify: {self.cfg.gitlab.verify_tls}")
         lines.append(f"Upstream TLS verify: {self.cfg.upstream.verify_tls}")
+        lines.append(f"Git HTTP version: {self.cfg.git.http_version or '<git default>'}")
+        lines.append(f"Git HTTP postBuffer: {self.cfg.git.post_buffer}")
+        lines.append(f"Git operation retries: {self.cfg.git.operation_retries}")
+        lines.append(f"Git retry backoff seconds: {self.cfg.git.retry_backoff_seconds}")
         lines.append(f"TLS CA file: {self.cfg.tls.ca_file or '<system>'}")
         lines.append(f"TLS CA path: {self.cfg.tls.ca_path or '<system>'}")
         if self.cfg.tls.ca_file:

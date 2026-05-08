@@ -69,6 +69,22 @@ class TLSConfig:
     ca_path: Path | None = None
 
 
+
+
+@dataclass(frozen=True)
+class GitConfig:
+    # Git smart-HTTP transport tuning used by mirror clone/update/push jobs.
+    # Large repositories behind corporate proxies/TLS inspection can fail with
+    # curl 65 / "unable to rewind rpc post data" unless HTTP/1.1 and a larger
+    # post buffer are forced. Set values to empty/0 to let Git defaults apply.
+    http_version: str = "HTTP/1.1"
+    post_buffer: int = 524288000
+    low_speed_limit: int = 0
+    low_speed_time: int = 0
+    operation_retries: int = 3
+    retry_backoff_seconds: float = 5.0
+    retry_backoff_multiplier: float = 2.0
+
 @dataclass(frozen=True)
 class ServerConfig:
     listen_host: str = "0.0.0.0"
@@ -113,6 +129,7 @@ class Config:
     cache: CacheConfig = field(default_factory=CacheConfig)
     upstream: UpstreamConfig = field(default_factory=UpstreamConfig)
     tls: TLSConfig = field(default_factory=TLSConfig)
+    git: GitConfig = field(default_factory=GitConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     background: BackgroundConfig = field(default_factory=BackgroundConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -192,6 +209,16 @@ def load_config(path: str | Path | None = None) -> Config:
         ca_path=Path(str(ca_path_raw)) if str(ca_path_raw).strip() else None,
     )
 
+    git_cfg = GitConfig(
+        http_version=str(_get(raw, "git", "http_version", default="HTTP/1.1")).strip(),
+        post_buffer=int(_get(raw, "git", "post_buffer", default=524288000)),
+        low_speed_limit=int(_get(raw, "git", "low_speed_limit", default=0)),
+        low_speed_time=int(_get(raw, "git", "low_speed_time", default=0)),
+        operation_retries=max(1, int(_get(raw, "git", "operation_retries", default=3))),
+        retry_backoff_seconds=max(0.0, float(_get(raw, "git", "retry_backoff_seconds", default=5.0))),
+        retry_backoff_multiplier=max(1.0, float(_get(raw, "git", "retry_backoff_multiplier", default=2.0))),
+    )
+
     server = ServerConfig(
         listen_host=str(_get(raw, "server", "listen_host", default="0.0.0.0")),
         listen_port=int(_get(raw, "server", "listen_port", default=8080)),
@@ -227,6 +254,7 @@ def load_config(path: str | Path | None = None) -> Config:
         cache=cache,
         upstream=upstream,
         tls=tls,
+        git=git_cfg,
         server=server,
         background=background,
         logging=logging_cfg,
