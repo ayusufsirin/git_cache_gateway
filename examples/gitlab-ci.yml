@@ -1,0 +1,16 @@
+hooks:
+  pre_get_sources_script:
+    - git config --global --add url."http://git-cache.example.local:8080/github.com/".insteadOf "https://github.com/"
+    - git config --global --add url."http://git-cache.example.local:8080/github.com/".insteadOf "git@github.com:"
+    - git config --global --add url."http://git-cache.example.local:8080/github.com/".insteadOf "ssh://git@github.com/"
+    - git config --global --add url."http://git-cache.example.local:8080/gitlab.com/".insteadOf "https://gitlab.com/"
+    - git config --global --add url."http://git-cache.example.local:8080/gitlab.com/".insteadOf "git@gitlab.com:"
+    - git config --global --add url."http://git-cache.example.local:8080/gitlab.com/".insteadOf "ssh://git@gitlab.com/"
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+
+cache-test:
+  script:
+    - git remote -v
+    - git submodule status --recursive || true

@@ -1,0 +1,55 @@
+[gitlab]
+base_url = "https://gitlab.example.local"
+token_env = "GITCACHE_GITLAB_TOKEN"
+root_group = "mirror"
+visibility = "internal"
+verify_tls = true
+git_http_username = "oauth2"
+
+[providers]
+hosts = ["github.com", "gitlab.com", "bitbucket.org"]
+default_scheme = "https"
+
+[upstream]
+# Prefer true. Set false only for quick diagnostics. In company networks, mount
+# your company CA and set [tls].ca_file instead of disabling verification.
+verify_tls = true
+
+[tls]
+# Optional PEM CA bundle used by Python HTTPS calls and git commands.
+# Example Docker mount: ./ca/company-ca.crt:/etc/git-cache-gateway/ca/company-ca.crt:ro
+ca_file = ""
+# Optional OpenSSL-hashed CA directory. Usually leave empty.
+ca_path = ""
+
+[cache]
+workdir = "/var/cache/git-cache-gateway"
+lockdir = "/var/lock/git-cache-gateway"
+update_if_older_than_seconds = 3600
+fail_on_update_error = false
+enable_lfs = false
+
+[server]
+listen_host = "0.0.0.0"
+listen_port = 8080
+mode = "proxy"
+# proxy_upstream means first-time clients are served from GitHub/GitLab.com
+# immediately while the internal GitLab mirror is populated in the background.
+# wait_for_mirror gives the old blocking behavior.
+cache_miss_strategy = "proxy_upstream"
+redirect_include_token = false
+upstream_timeout_seconds = 3600
+max_request_body_bytes = 2147483648
+
+[background]
+enabled = true
+mirror_workers = 4
+max_pending_jobs = 256
+refresh_existing = true
+
+[logging]
+level = "INFO"
+access_level = "INFO"
+request_headers = false
+upstream_headers = false
+mirror_events = true
