@@ -2,12 +2,50 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .config import GitLabConfig, TLSConfig
 from .util import build_ssl_context
+
+
+class GitLabAPIError(RuntimeError):
+    """Exception with the GitLab response body preserved.
+
+    urllib's HTTPError loses useful GitLab JSON unless callers remember to read
+    the body immediately. Keeping it here makes background mirror failures
+    actionable in Docker logs.
+    """
+
+    def __init__(
+        self,
+        *,
+        method: str,
+        path: str,
+        status: int,
+        reason: str,
+        body: str,
+        payload: dict[str, Any] | None = None,
+    ):
+        self.method = method
+        self.path = path
+        self.status = status
+        self.reason = reason
+        self.body = body
+        self.payload = payload
+        super().__init__(self.__str__())
+
+    def __str__(self) -> str:
+        payload_text = ""
+        if self.payload is not None:
+            try:
+                payload_text = f" payload={json.dumps(self.payload, sort_keys=True)}"
+            except Exception:
+                payload_text = f" payload={self.payload!r}"
+        body_text = f" body={self.body}" if self.body else ""
+        return f"GitLab API {self.method} {self.path} failed: HTTP {self.status} {self.reason}{body_text}{payload_text}"
 
 
 @dataclass(frozen=True)
@@ -54,23 +92,36 @@ class GitLabAPI:
         try:
             with urlopen(req, timeout=60, context=self.ssl_context) as resp:  # nosec - user-controlled homelab endpoint
                 if resp.status not in ok:
-                    raise RuntimeError(f"GitLab API unexpected status {resp.status}: {path}")
+                    raw = resp.read()
+                    text = raw.decode("utf-8", errors="replace").strip() if raw else ""
+                    raise GitLabAPIError(
+                        method=method,
+                        path=path,
+                        status=resp.status,
+                        reason=getattr(resp, "reason", "Unexpected status"),
+                        body=text,
+                        payload=data,
+                    )
                 raw = resp.read()
                 if not raw:
                     return None
                 return json.loads(raw.decode("utf-8"))
         except HTTPError as e:
+            raw = e.read()
+            text = raw.decode("utf-8", errors="replace").strip() if raw else ""
             if e.code in ok:
-                raw = e.read()
-                return json.loads(raw.decode("utf-8")) if raw else None
-            raise
+                return json.loads(text) if text else None
+            raise GitLabAPIError(
+                method=method,
+                path=path,
+                status=e.code,
+                reason=e.reason,
+                body=text,
+                payload=data,
+            ) from e
 
     def _paged_get(self, path: str, *, per_page: int = 100) -> list[dict]:
-        """Read a GitLab list endpoint using simple page iteration.
-
-        We stop when the returned page is shorter than per_page. This avoids
-        needing response headers and is enough for the mirror-admin operations.
-        """
+        """Read a GitLab list endpoint using simple page iteration."""
         out: list[dict] = []
         page = 1
         while True:
@@ -105,26 +156,36 @@ class GitLabAPI:
         encoded = quote(full_path.strip("/"), safe="")
         try:
             data = self._request("GET", f"/groups/{encoded}")
-        except HTTPError as e:
-            if e.code == 404:
+        except GitLabAPIError as e:
+            if e.status == 404:
                 return None
             raise
         assert isinstance(data, dict)
         return self._group_from_data(data)
 
     @staticmethod
-    def _http_error_text(error: HTTPError) -> str:
-        try:
-            raw = error.read()
-        except Exception:
-            raw = b""
-        if not raw:
-            return f"HTTP {error.code}: {error.reason}"
-        try:
-            text = raw.decode("utf-8", errors="replace").strip()
-        except Exception:
-            text = repr(raw)
-        return f"HTTP {error.code}: {error.reason}: {text}"
+    def _http_error_text(error: BaseException) -> str:
+        if isinstance(error, GitLabAPIError):
+            return str(error)
+        if isinstance(error, HTTPError):
+            try:
+                raw = error.read()
+            except Exception:
+                raw = b""
+            if not raw:
+                return f"HTTP {error.code}: {error.reason}"
+            try:
+                text = raw.decode("utf-8", errors="replace").strip()
+            except Exception:
+                text = repr(raw)
+            return f"HTTP {error.code}: {error.reason}: {text}"
+        return repr(error)
+
+    def _fallback_visibility(self, requested: str) -> str | None:
+        fallback = (self.cfg.visibility_fallback or "").strip()
+        if self.cfg.strict_visibility or not fallback or fallback == requested:
+            return None
+        return fallback
 
     def set_group_visibility(self, group_id: int, visibility: str) -> None:
         self._request("PUT", f"/groups/{group_id}", data={"visibility": visibility}, ok=(200,))
@@ -133,12 +194,14 @@ class GitLabAPI:
         try:
             self.set_group_visibility(group.id, visibility)
             return None
-        except HTTPError as e:
+        except (GitLabAPIError, HTTPError) as e:
             return self._http_error_text(e)
 
-    def ensure_group_visibility(self, group: GitLabGroup, visibility: str, *, strict: bool = True) -> GitLabGroup:
+    def ensure_group_visibility(self, group: GitLabGroup, visibility: str, *, strict: bool | None = None) -> GitLabGroup:
         if group.visibility == visibility:
             return group
+        if strict is None:
+            strict = self.cfg.strict_visibility
         if strict:
             self.set_group_visibility(group.id, visibility)
             return GitLabGroup(id=group.id, full_path=group.full_path, visibility=visibility)
@@ -147,13 +210,28 @@ class GitLabAPI:
             return GitLabGroup(id=group.id, full_path=group.full_path, visibility=visibility)
         return group
 
-    def ensure_group_path(self, full_path: str, visibility: str | None = None) -> GitLabGroup:
-        """Ensure nested groups exist and return the deepest group.
+    def _create_group_with_visibility_fallback(self, payload: dict[str, object], desired_visibility: str) -> GitLabGroup:
+        try:
+            data = self._request("POST", "/groups", data=payload, ok=(201,))
+            assert isinstance(data, dict)
+            return self._group_from_data(data)
+        except GitLabAPIError as first_error:
+            fallback = self._fallback_visibility(desired_visibility)
+            if fallback is None or first_error.status not in {400, 403}:
+                raise
+            fallback_payload = dict(payload)
+            fallback_payload["visibility"] = fallback
+            try:
+                data = self._request("POST", "/groups", data=fallback_payload, ok=(201,))
+                assert isinstance(data, dict)
+                return self._group_from_data(data)
+            except GitLabAPIError:
+                # Preserve the first, more informative error because it contains
+                # the desired policy that failed.
+                raise first_error
 
-        Existing and newly-created groups are forced to the requested visibility
-        when visibility is provided. This is important for a mirror registry,
-        because GitLab may create nested groups with default/private visibility.
-        """
+    def ensure_group_path(self, full_path: str, visibility: str | None = None) -> GitLabGroup:
+        """Ensure nested groups exist and return the deepest group."""
         desired_visibility = visibility or self.cfg.visibility
         parts = [p for p in full_path.strip("/").split("/") if p]
         if not parts:
@@ -172,9 +250,7 @@ class GitLabAPI:
             payload: dict[str, object] = {"name": part, "path": part, "visibility": desired_visibility}
             if parent_id is not None:
                 payload["parent_id"] = parent_id
-            data = self._request("POST", "/groups", data=payload, ok=(201,))
-            assert isinstance(data, dict)
-            group = self._group_from_data(data)
+            group = self._create_group_with_visibility_fallback(payload, desired_visibility)
             if group.visibility != desired_visibility:
                 group = self.ensure_group_visibility(group, desired_visibility)
             parent_id = group.id
@@ -185,8 +261,8 @@ class GitLabAPI:
         encoded = quote(full_path.strip("/"), safe="")
         try:
             data = self._request("GET", f"/projects/{encoded}")
-        except HTTPError as e:
-            if e.code == 404:
+        except GitLabAPIError as e:
+            if e.status == 404:
                 return None
             raise
         assert isinstance(data, dict)
@@ -199,12 +275,14 @@ class GitLabAPI:
         try:
             self.set_project_visibility(project.id, visibility)
             return None
-        except HTTPError as e:
+        except (GitLabAPIError, HTTPError) as e:
             return self._http_error_text(e)
 
-    def ensure_project_visibility(self, project: GitLabProject, visibility: str, *, strict: bool = True) -> GitLabProject:
+    def ensure_project_visibility(self, project: GitLabProject, visibility: str, *, strict: bool | None = None) -> GitLabProject:
         if project.visibility == visibility:
             return project
+        if strict is None:
+            strict = self.cfg.strict_visibility
         if strict:
             self.set_project_visibility(project.id, visibility)
             return GitLabProject(
@@ -225,6 +303,24 @@ class GitLabAPI:
             )
         return project
 
+    def _create_project(self, payload: dict[str, object], desired_visibility: str) -> GitLabProject:
+        try:
+            data = self._request("POST", "/projects", data=payload, ok=(201,))
+            assert isinstance(data, dict)
+            return self._project_from_data(data)
+        except GitLabAPIError as first_error:
+            fallback = self._fallback_visibility(desired_visibility)
+            if fallback is None or first_error.status not in {400, 403}:
+                raise
+            fallback_payload = dict(payload)
+            fallback_payload["visibility"] = fallback
+            try:
+                data = self._request("POST", "/projects", data=fallback_payload, ok=(201,))
+                assert isinstance(data, dict)
+                return self._project_from_data(data)
+            except GitLabAPIError:
+                raise first_error
+
     def ensure_empty_project(self, full_path: str, visibility: str) -> GitLabProject:
         project = self.get_project(full_path)
         if project is not None:
@@ -236,22 +332,25 @@ class GitLabAPI:
         project_path = parts[-1]
         group_path = "/".join(parts[:-1])
         namespace = self.ensure_group_path(group_path, visibility=visibility)
-        payload = {
+        payload: dict[str, object] = {
             "name": project_path,
             "path": project_path,
             "namespace_id": namespace.id,
             "visibility": visibility,
             "initialize_with_readme": False,
         }
-        data = self._request("POST", "/projects", data=payload, ok=(201,))
-        assert isinstance(data, dict)
-        project = self._project_from_data(data)
+        try:
+            project = self._create_project(payload, visibility)
+        except GitLabAPIError as e:
+            # Race/self-healing path: another worker or previous failed run may
+            # have created the project after our first GET. Re-check before
+            # giving up; GitLab often returns 400 for "path has already been taken".
+            project = self.get_project(full_path)
+            if project is None:
+                raise
         return self.ensure_project_visibility(project, visibility)
 
     def set_default_branch(self, project_id: int, branch: str) -> None:
-        # GitLab uses project.default_branch to advertise remote HEAD over smart HTTP.
-        # A mirror push creates refs, but it does not always update this metadata,
-        # especially when the project was first created empty.
         self._request("PUT", f"/projects/{project_id}", data={"default_branch": branch}, ok=(200,))
 
     def list_project_branches(self, project_id: int) -> list[str]:
@@ -274,21 +373,9 @@ class GitLabAPI:
         *,
         strict: bool = False,
     ) -> dict[str, object]:
-        """Force every subgroup and project under root_group_path to visibility.
-
-        By default this is best-effort: GitLab may return 403 when the token is
-        not owner/admin, when instance settings restrict visibility levels, or
-        when a subgroup/project is not allowed to become more visible than its
-        parent. We keep walking and return failed object details instead of
-        crashing. Pass strict=True to fail on the first GitLab API error.
-        """
-        # Do not call ensure_group_path here: an existing root group may be
-        # private and not mutable by this token. Fetch it first so we can report
-        # the exact 403 as a skipped update rather than crashing before traversal.
+        """Force every subgroup and project under root_group_path to visibility."""
         root = self.get_group(root_group_path)
         if root is None:
-            # Root does not exist; this is a real setup action, so keep strict
-            # behavior. New groups/projects will still be created with visibility.
             root = self.ensure_group_path(root_group_path, visibility=visibility)
 
         counts: dict[str, object] = {
@@ -314,7 +401,7 @@ class GitLabAPI:
                     self.set_group_visibility(group.id, visibility)
                     counts["groups_updated"] = int(counts["groups_updated"]) + 1
                     current_group = GitLabGroup(id=group.id, full_path=group.full_path, visibility=visibility)
-                except HTTPError as e:
+                except (GitLabAPIError, HTTPError) as e:
                     if strict:
                         raise
                     counts["groups_failed"] = int(counts["groups_failed"]) + 1
@@ -326,7 +413,7 @@ class GitLabAPI:
                     try:
                         self.set_project_visibility(project.id, visibility)
                         counts["projects_updated"] = int(counts["projects_updated"]) + 1
-                    except HTTPError as e:
+                    except (GitLabAPIError, HTTPError) as e:
                         if strict:
                             raise
                         counts["projects_failed"] = int(counts["projects_failed"]) + 1
@@ -337,11 +424,3 @@ class GitLabAPI:
 
         walk(root)
         return counts
-
-    def list_project_variables(self, project_id: int) -> list[dict]:
-        data = self._request("GET", f"/projects/{project_id}/variables")
-        assert isinstance(data, list)
-        return data
-
-    def project_url(self, full_path: str) -> str:
-        return f"{self.cfg.base_url.rstrip('/')}/{full_path.strip('/')}.git"

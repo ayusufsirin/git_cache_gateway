@@ -8,7 +8,7 @@ The gateway allows normal Git commands to keep working:
 git clone https://github.com/org/repo.git
 git clone --recurse-submodules https://github.com/org/repo.git
 git submodule update --init --recursive
-````
+```
 
 External Git URLs are transparently rewritten to the local gateway with Git’s native `url.insteadOf` mechanism:
 
@@ -197,6 +197,10 @@ base_url = "https://gitlab.example.local"
 token_env = "GITCACHE_GITLAB_TOKEN"
 root_group = "mirror"
 visibility = "internal"
+# Fallback used when GitLab rejects the requested visibility during group/project creation.
+# Set to "" with strict_visibility = true when visibility policy failures should fail mirror jobs.
+visibility_fallback = "private"
+strict_visibility = false
 verify_tls = true
 git_http_username = "oauth2"
 
@@ -556,6 +560,34 @@ Common reasons for `403 Forbidden`:
 * a subgroup or project cannot be more visible than its parent group
 * company-managed namespace policies block visibility changes
 
+### Visibility Fallback
+
+GitLab may reject `internal` visibility during `POST /projects` or `POST /groups` because of parent namespace settings, instance policy, or token permissions. The gateway preserves the full GitLab API error body in logs so the exact reason is visible.
+
+For resilient operation, keep the mirror functional by allowing a private fallback:
+
+```toml
+[gitlab]
+visibility = "internal"
+visibility_fallback = "private"
+strict_visibility = false
+```
+
+In this mode, a mirror can still be created as `private` and served through the gateway in `proxy` mode, because the gateway injects GitLab credentials internally. After fixing the GitLab policy or token permissions, run:
+
+```bash
+git-cache-gateway enforce-visibility --visibility internal
+```
+
+For strict policy enforcement, disable fallback:
+
+```toml
+[gitlab]
+visibility = "internal"
+visibility_fallback = ""
+strict_visibility = true
+```
+
 ---
 
 ## Logging
@@ -679,6 +711,13 @@ Before using this with multiple users or CI runners:
 ---
 
 ## Version Notes
+
+### v0.2.5
+
+* Added full GitLab API error bodies and request payloads to mirror job failures.
+* Added `visibility_fallback` and `strict_visibility` for GitLab namespace/instance policy compatibility.
+* Re-checks whether a project appeared after GitLab returns a project-create error, which helps with races and partially completed previous runs.
+* Logs when a mirror falls back from the requested visibility to the actual visibility.
 
 ### v0.2.4
 

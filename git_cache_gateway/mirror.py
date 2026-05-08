@@ -217,7 +217,16 @@ class MirrorManager:
         with file_lock(self.cfg.cache.lockdir, mapping.cache_key):
             self._mirror_log("mirror_job_start reason=%s remote=%s project=%s", reason, mapping.remote_url, mapping.gitlab_full_path)
             self._clone_or_update_local_mirror(mapping)
-            self.gitlab.ensure_empty_project(mapping.gitlab_full_path, self.cfg.gitlab.visibility)
+            project = self.gitlab.ensure_empty_project(mapping.gitlab_full_path, self.cfg.gitlab.visibility)
+            if project.visibility != self.cfg.gitlab.visibility:
+                self._mirror_log(
+                    "mirror_visibility_fallback remote=%s project=%s requested=%s actual=%s strict=%s",
+                    mapping.remote_url,
+                    mapping.gitlab_full_path,
+                    self.cfg.gitlab.visibility,
+                    project.visibility,
+                    self.cfg.gitlab.strict_visibility,
+                )
             self._push_local_mirror_to_gitlab(mapping)
             self._touch_stamp(mapping)
             self._mirror_log("mirror_job_done reason=%s remote=%s project=%s", reason, mapping.remote_url, mapping.gitlab_full_path)
@@ -232,6 +241,8 @@ class MirrorManager:
         lines.append(f"GitLab: {self.cfg.gitlab.base_url}")
         lines.append(f"Root group: {self.cfg.gitlab.root_group}")
         lines.append(f"Mirror visibility: {self.cfg.gitlab.visibility}")
+        lines.append(f"Mirror visibility fallback: {self.cfg.gitlab.visibility_fallback or '<disabled>'}")
+        lines.append(f"Strict visibility: {self.cfg.gitlab.strict_visibility}")
         lines.append(f"Workdir: {self.cfg.cache.workdir}")
         lines.append(f"Lockdir: {self.cfg.cache.lockdir}")
         lines.append(f"Mode: {self.cfg.server.mode}")

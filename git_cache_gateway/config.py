@@ -24,6 +24,14 @@ class GitLabConfig:
     token_env: str = "GITCACHE_GITLAB_TOKEN"
     root_group: str = "mirror"
     visibility: str = "internal"
+    # If GitLab rejects the requested visibility during create/update (for
+    # example because the parent namespace is private, instance settings
+    # disable internal visibility, or the token is not owner/admin), the
+    # gateway can still create a usable private mirror and report the policy
+    # problem in logs. Set to an empty string and strict_visibility=true to
+    # fail hard instead.
+    visibility_fallback: str = "private"
+    strict_visibility: bool = False
     verify_tls: bool = True
     git_http_username: str = "oauth2"
 
@@ -153,6 +161,8 @@ def load_config(path: str | Path | None = None) -> Config:
         token_env=str(_get(raw, "gitlab", "token_env", default="GITCACHE_GITLAB_TOKEN")),
         root_group=str(_get(raw, "gitlab", "root_group", default="mirror")).strip("/"),
         visibility=str(_get(raw, "gitlab", "visibility", default="internal")),
+        visibility_fallback=str(_get(raw, "gitlab", "visibility_fallback", default="private")),
+        strict_visibility=bool(_get(raw, "gitlab", "strict_visibility", default=False)),
         verify_tls=bool(_get(raw, "gitlab", "verify_tls", default=True)),
         git_http_username=str(_get(raw, "gitlab", "git_http_username", default="oauth2")),
     )

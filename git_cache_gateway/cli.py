@@ -19,6 +19,11 @@ base_url = "https://gitlab.example.local"
 token_env = "GITCACHE_GITLAB_TOKEN"
 root_group = "mirror"
 visibility = "internal"
+# If GitLab rejects the requested visibility because of namespace policy, token
+# permissions, or instance settings, use this fallback so mirrors still work.
+# Set visibility_fallback = "" and strict_visibility = true to fail hard instead.
+visibility_fallback = "private"
+strict_visibility = false
 verify_tls = true
 git_http_username = "oauth2"
 
