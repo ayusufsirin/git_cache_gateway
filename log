@@ -1,0 +1,155 @@
+GIT_TRACE=1 GIT_CURL_VERBOSE=1 \
+git ls-remote --symref https://gitlabce01.company.com/mirror/github.com/qemu/qemu.git HEAD
+18:22:13.602179 git.c:455               trace: built-in: git ls-remote --symref https://gitlabce01.company.com/mirror/github.com/qemu/qemu.git HEAD
+18:22:13.602438 run-command.c:668       trace: run_command: git remote-https https://gitlabce01.company.com/mirror/github.com/qemu/qemu.git https://gitlabce01.company.com/mirror/github.com/qemu/qemu.git
+18:22:13.604817 git.c:742               trace: exec: git-remote-https https://gitlabce01.company.com/mirror/github.com/qemu/qemu.git https://gitlabce01.company.com/mirror/github.com/qemu/qemu.git
+18:22:13.604896 run-command.c:668       trace: run_command: git-remote-https https://gitlabce01.company.com/mirror/github.com/qemu/qemu.git https://gitlabce01.company.com/mirror/github.com/qemu/qemu.git
+18:22:13.614929 http.c:664              == Info: Couldn't find host gitlabce01.company.com in the (nil) file; using defaults
+18:22:13.617815 http.c:664              == Info:   Trying 10.50.0.129:443...
+18:22:13.622060 http.c:664              == Info: Connected to gitlabce01.company.com (10.50.0.129) port 443 (#0)
+18:22:13.704533 http.c:664              == Info: found 446 certificates in /etc/ssl/certs
+18:22:13.704639 http.c:664              == Info: GnuTLS ciphers: NORMAL:-ARCFOUR-128:-CTYPE-ALL:+CTYPE-X509:-VERS-SSL3.0
+18:22:13.704690 http.c:664              == Info: ALPN, offering h2
+18:22:13.704700 http.c:664              == Info: ALPN, offering http/1.1
+18:22:13.711425 http.c:664              == Info: SSL connection using TLS1.3 / ECDHE_RSA_AES_256_GCM_SHA384
+18:22:13.714261 http.c:664              == Info:   server certificate verification OK
+18:22:13.714278 http.c:664              == Info:   server certificate status verification SKIPPED
+18:22:13.714441 http.c:664              == Info:   common name: gitlabce01.company.com (matched)
+18:22:13.714455 http.c:664              == Info:   server certificate expiration date OK
+18:22:13.714469 http.c:664              == Info:   server certificate activation date OK
+18:22:13.714496 http.c:664              == Info:   certificate public key: RSA
+18:22:13.714508 http.c:664              == Info:   certificate version: #3
+18:22:13.714552 http.c:664              == Info:   subject: C=TR,ST=GLB,L=ANK,O=BYD,CN=gitlabce01.company.com
+18:22:13.714565 http.c:664              == Info:   start date: Mon, 09 Mar 2026 08:03:44 GMT
+18:22:13.714576 http.c:664              == Info:   expire date: Thu, 25 Apr 2030 06:25:00 GMT
+18:22:13.714602 http.c:664              == Info:   issuer: DC=tr,DC=com,DC=aselsan,CN=AselsanIntErnetCA
+18:22:13.714626 http.c:664              == Info: ALPN, server accepted to use h2
+18:22:13.714670 http.c:664              == Info: Using HTTP2, server supports multiplexing
+18:22:13.714680 http.c:664              == Info: Connection state changed (HTTP/2 confirmed)
+18:22:13.714694 http.c:664              == Info: Copying HTTP/2 data in stream buffer to connection buffer after upgrade: len=0
+18:22:13.714803 http.c:664              == Info: Using Stream ID: 1 (easy handle 0x653c80c07850)
+18:22:13.714860 http.c:611              => Send header, 0000000269 bytes (0x0000010d)
+18:22:13.714874 http.c:623              => Send header: GET /mirror/github.com/qemu/qemu.git/info/refs?service=git-upload-pack HTTP/2
+18:22:13.714881 http.c:623              => Send header: Host: gitlabce01.company.com
+18:22:13.714887 http.c:623              => Send header: user-agent: git/2.34.1
+18:22:13.714918 http.c:623              => Send header: accept: */*
+18:22:13.714926 http.c:623              => Send header: accept-encoding: deflate, gzip, br, zstd
+18:22:13.714932 http.c:623              => Send header: accept-language: en-US, *;q=0.9
+18:22:13.714938 http.c:623              => Send header: pragma: no-cache
+18:22:13.714943 http.c:623              => Send header: git-protocol: version=2
+18:22:13.714949 http.c:623              => Send header:
+18:22:13.715147 http.c:664              == Info: Connection state changed (MAX_CONCURRENT_STREAMS == 128)!
+18:22:13.736300 http.c:611              <= Recv header, 0000000013 bytes (0x0000000d)
+18:22:13.736316 http.c:623              <= Recv header: HTTP/2 401
+18:22:13.736324 http.c:611              <= Recv header, 0000000015 bytes (0x0000000f)
+18:22:13.736329 http.c:623              <= Recv header: server: nginx
+18:22:13.736335 http.c:611              <= Recv header, 0000000037 bytes (0x00000025)
+18:22:13.736340 http.c:623              <= Recv header: date: Fri, 08 May 2026 15:22:03 GMT
+18:22:13.736346 http.c:611              <= Recv header, 0000000041 bytes (0x00000029)
+18:22:13.736353 http.c:623              <= Recv header: content-type: text/plain; charset=utf-8
+18:22:13.736360 http.c:611              <= Recv header, 0000000021 bytes (0x00000015)
+18:22:13.736367 http.c:623              <= Recv header: content-length: 363
+18:22:13.736372 http.c:611              <= Recv header, 0000000025 bytes (0x00000019)
+18:22:13.736378 http.c:623              <= Recv header: cache-control: no-cache
+18:22:13.736384 http.c:611              <= Recv header, 0000000021 bytes (0x00000015)
+18:22:13.736393 http.c:623              <= Recv header: nel: {"max_age": 0}
+18:22:13.736399 http.c:611              <= Recv header, 0000000014 bytes (0x0000000e)
+18:22:13.736405 http.c:623              <= Recv header: vary: Accept
+18:22:13.736413 http.c:611              <= Recv header, 0000000040 bytes (0x00000028)
+18:22:13.736419 http.c:623              <= Recv header: www-authenticate: Basic realm="GitLab"
+18:22:13.736426 http.c:611              <= Recv header, 0000000033 bytes (0x00000021)
+18:22:13.736431 http.c:623              <= Recv header: x-content-type-options: nosniff
+18:22:13.736438 http.c:611              <= Recv header, 0000000028 bytes (0x0000001c)
+18:22:13.736443 http.c:623              <= Recv header: x-download-options: noopen
+18:22:13.736453 http.c:611              <= Recv header, 0000000029 bytes (0x0000001d)
+18:22:13.736458 http.c:623              <= Recv header: x-frame-options: SAMEORIGIN
+18:22:13.736465 http.c:611              <= Recv header, 0000000078 bytes (0x0000004e)
+18:22:13.736472 http.c:623              <= Recv header: x-gitlab-meta: {"correlation_id":"01KR42WY2K578DW6K45WFP4G4W","version":"1"}
+18:22:13.736479 http.c:611              <= Recv header, 0000000041 bytes (0x00000029)
+18:22:13.736485 http.c:623              <= Recv header: x-permitted-cross-domain-policies: none
+18:22:13.736492 http.c:611              <= Recv header, 0000000042 bytes (0x0000002a)
+18:22:13.736496 http.c:623              <= Recv header: x-request-id: 01KR42WY2K578DW6K45WFP4G4W
+18:22:13.736502 http.c:611              <= Recv header, 0000000021 bytes (0x00000015)
+18:22:13.736508 http.c:623              <= Recv header: x-runtime: 0.015139
+18:22:13.736515 http.c:611              <= Recv header, 0000000021 bytes (0x00000015)
+18:22:13.736520 http.c:623              <= Recv header: x-xss-protection: 0
+18:22:13.736526 http.c:611              <= Recv header, 0000000045 bytes (0x0000002d)
+18:22:13.736531 http.c:623              <= Recv header: strict-transport-security: max-age=63072000
+18:22:13.736538 http.c:611              <= Recv header, 0000000002 bytes (0x00000002)
+18:22:13.736544 http.c:623              <= Recv header:
+18:22:13.736576 http.c:664              == Info: Connection #0 to host gitlabce01.company.com left intact
+18:22:13.736642 run-command.c:668       trace: run_command: 'git credential-store get'
+18:22:13.742376 git.c:455               trace: built-in: git credential-store get
+18:22:13.743190 http.c:664              == Info: Found bundle for host gitlabce01.company.com: 0x653c80c0e080 [can multiplex]
+18:22:13.743241 http.c:664              == Info: Re-using existing connection! (#0) with host gitlabce01.company.com
+18:22:13.743285 http.c:664              == Info: Connected to gitlabce01.company.com (10.50.0.129) port 443 (#0)
+18:22:13.743334 http.c:664              == Info: Server auth using Basic with user 'ahmetysirin'
+18:22:13.743406 http.c:664              == Info: Using Stream ID: 3 (easy handle 0x653c80c07850)
+18:22:13.743545 http.c:611              => Send header, 0000000332 bytes (0x0000014c)
+18:22:13.743587 http.c:623              => Send header: GET /mirror/github.com/qemu/qemu.git/info/refs?service=git-upload-pack HTTP/2
+18:22:13.743597 http.c:623              => Send header: Host: gitlabce01.company.com
+18:22:13.743606 http.c:623              => Send header: authorization: Basic <redacted>
+18:22:13.743615 http.c:623              => Send header: user-agent: git/2.34.1
+18:22:13.743623 http.c:623              => Send header: accept: */*
+18:22:13.743633 http.c:623              => Send header: accept-encoding: deflate, gzip, br, zstd
+18:22:13.743652 http.c:623              => Send header: accept-language: en-US, *;q=0.9
+18:22:13.743665 http.c:623              => Send header: pragma: no-cache
+18:22:13.743675 http.c:623              => Send header: git-protocol: version=2
+18:22:13.743689 http.c:623              => Send header:
+18:22:13.853069 http.c:611              <= Recv header, 0000000013 bytes (0x0000000d)
+18:22:13.853100 http.c:623              <= Recv header: HTTP/2 200
+18:22:13.853127 http.c:611              <= Recv header, 0000000015 bytes (0x0000000f)
+18:22:13.853143 http.c:623              <= Recv header: server: nginx
+18:22:13.853173 http.c:611              <= Recv header, 0000000037 bytes (0x00000025)
+18:22:13.853186 http.c:623              <= Recv header: date: Fri, 08 May 2026 15:22:03 GMT
+18:22:13.853196 http.c:611              <= Recv header, 0000000059 bytes (0x0000003b)
+18:22:13.853209 http.c:623              <= Recv header: content-type: application/x-git-upload-pack-advertisement
+18:22:13.853220 http.c:611              <= Recv header, 0000000021 bytes (0x00000015)
+18:22:13.853227 http.c:623              <= Recv header: content-length: 164
+18:22:13.853237 http.c:611              <= Recv header, 0000000025 bytes (0x00000019)
+18:22:13.853245 http.c:623              <= Recv header: cache-control: no-cache
+18:22:13.853279 http.c:611              <= Recv header, 0000000024 bytes (0x00000018)
+18:22:13.853288 http.c:623              <= Recv header: content-encoding: gzip
+18:22:13.853297 http.c:611              <= Recv header, 0000000045 bytes (0x0000002d)
+18:22:13.853302 http.c:623              <= Recv header: strict-transport-security: max-age=63072000
+18:22:13.853312 http.c:611              <= Recv header, 0000000050 bytes (0x00000032)
+18:22:13.853320 http.c:623              <= Recv header: referrer-policy: strict-origin-when-cross-origin
+18:22:13.853330 http.c:611              <= Recv header, 0000000002 bytes (0x00000002)
+18:22:13.853339 http.c:623              <= Recv header:
+18:22:13.853474 http.c:664              == Info: Connection #0 to host gitlabce01.company.com left intact
+18:22:13.853522 run-command.c:668       trace: run_command: 'git credential-store store'
+18:22:13.859109 git.c:455               trace: built-in: git credential-store store
+18:22:13.860721 http.c:664              == Info: Found bundle for host gitlabce01.company.com: 0x653c80c0e080 [can multiplex]
+18:22:13.860766 http.c:664              == Info: Re-using existing connection! (#0) with host gitlabce01.company.com
+18:22:13.860786 http.c:664              == Info: Connected to gitlabce01.company.com (10.50.0.129) port 443 (#0)
+18:22:13.860821 http.c:664              == Info: Server auth using Basic with user 'ahmetysirin'
+18:22:13.860878 http.c:664              == Info: Using Stream ID: 5 (easy handle 0x653c80c07850)
+18:22:13.860968 http.c:611              => Send header, 0000000371 bytes (0x00000173)
+18:22:13.860992 http.c:623              => Send header: POST /mirror/github.com/qemu/qemu.git/git-upload-pack HTTP/2
+18:22:13.861001 http.c:623              => Send header: Host: gitlabce01.company.com
+18:22:13.861009 http.c:623              => Send header: authorization: Basic <redacted>
+18:22:13.861018 http.c:623              => Send header: user-agent: git/2.34.1
+18:22:13.861028 http.c:623              => Send header: accept-encoding: deflate, gzip, br, zstd
+18:22:13.861038 http.c:623              => Send header: content-type: application/x-git-upload-pack-request
+18:22:13.861047 http.c:623              => Send header: accept: application/x-git-upload-pack-result
+18:22:13.861057 http.c:623              => Send header: git-protocol: version=2
+18:22:13.861067 http.c:623              => Send header: content-length: 102
+18:22:13.861074 http.c:623              => Send header:
+18:22:13.861119 http.c:664              == Info: We are completely uploaded and fine
+18:22:13.982476 http.c:611              <= Recv header, 0000000013 bytes (0x0000000d)
+18:22:13.982510 http.c:623              <= Recv header: HTTP/2 200
+18:22:13.982523 http.c:611              <= Recv header, 0000000015 bytes (0x0000000f)
+18:22:13.982531 http.c:623              <= Recv header: server: nginx
+18:22:13.982541 http.c:611              <= Recv header, 0000000037 bytes (0x00000025)
+18:22:13.982552 http.c:623              <= Recv header: date: Fri, 08 May 2026 15:22:03 GMT
+18:22:13.982562 http.c:611              <= Recv header, 0000000052 bytes (0x00000034)
+18:22:13.982569 http.c:623              <= Recv header: content-type: application/x-git-upload-pack-result
+18:22:13.982578 http.c:611              <= Recv header, 0000000025 bytes (0x00000019)
+18:22:13.982595 http.c:623              <= Recv header: cache-control: no-cache
+18:22:13.982604 http.c:611              <= Recv header, 0000000045 bytes (0x0000002d)
+18:22:13.982614 http.c:623              <= Recv header: strict-transport-security: max-age=63072000
+18:22:13.982623 http.c:611              <= Recv header, 0000000050 bytes (0x00000032)
+18:22:13.982632 http.c:623              <= Recv header: referrer-policy: strict-origin-when-cross-origin
+18:22:13.982642 http.c:611              <= Recv header, 0000000002 bytes (0x00000002)
+18:22:13.982659 http.c:623              <= Recv header:
+18:22:13.992096 http.c:664              == Info: Connection #0 to host gitlabce01.company.com left intact

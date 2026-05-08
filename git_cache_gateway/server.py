@@ -10,7 +10,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Iterable, Literal
 from urllib.parse import urlsplit, urlunsplit
 
+from . import __version__
 from .config import Config
+from .metrics import ServiceStats, prometheus_response
 from .mirror import MirrorManager
 from .scheduler import MirrorScheduler
 from .urlmap import RepoMapping, map_gateway_path
@@ -49,7 +51,7 @@ class GitCacheGatewayHTTPServer(ThreadingHTTPServer):
 
 
 class GitCacheGatewayHandler(BaseHTTPRequestHandler):
-    server_version = "git-cache-gateway/0.2.3"
+    server_version = f"git-cache-gateway/{__version__}"
 
     @property
     def cfg(self) -> Config:
@@ -62,6 +64,10 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
     @property
     def scheduler(self) -> MirrorScheduler:
         return self.server.scheduler  # type: ignore[attr-defined]
+
+    @property
+    def stats(self) -> ServiceStats:
+        return self.server.stats  # type: ignore[attr-defined]
 
     def log_message(self, fmt: str, *args) -> None:
         self._access_log("http_message", message=repr(fmt % args))
@@ -92,6 +98,9 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
     def _handle_request(self) -> None:
         req_id = next(_REQUEST_COUNTER)
         start = time.perf_counter()
+        target_for_metrics = "none"
+        status_for_metrics = 500
+        self.stats.inc_request()
         parsed_req = urlsplit(self.path)
         if self.cfg.logging.request_headers:
             self._debug_headers(f"request id={req_id}", self.headers.items())
@@ -107,14 +116,28 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
         )
 
         if parsed_req.path in {"/healthz", "/readyz"}:
+            status_for_metrics = 200
             self._send_text(200, "ok\n")
-            self._access_log("request_end", id=req_id, status=200, elapsed_ms=f"{(time.perf_counter() - start) * 1000:.1f}")
+            elapsed = time.perf_counter() - start
+            self.stats.observe_request(method=self.command, target=target_for_metrics, status=status_for_metrics, elapsed_seconds=elapsed)
+            self._access_log("request_end", id=req_id, status=200, elapsed_ms=f"{elapsed * 1000:.1f}")
+            return
+
+        if parsed_req.path == "/metrics":
+            raw, content_type = prometheus_response()
+            status_for_metrics = 200
+            self._send_bytes(200, raw, content_type)
+            elapsed = time.perf_counter() - start
+            self.stats.observe_request(method=self.command, target=target_for_metrics, status=status_for_metrics, elapsed_seconds=elapsed)
+            self._access_log("request_end", id=req_id, status=200, elapsed_ms=f"{elapsed * 1000:.1f}")
             return
 
         if parsed_req.path in {"/statusz", "/jobs"}:
             snap = self.scheduler.snapshot()
             payload = {
                 "ok": True,
+                "version": __version__,
+                "stats": self.stats.snapshot(),
                 "background": {
                     "enabled": self.cfg.background.enabled,
                     "mirror_workers": self.cfg.background.mirror_workers,
@@ -125,14 +148,28 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
                     "completed_total": snap.completed_total,
                     "failed_total": snap.failed_total,
                     "rejected_total": snap.rejected_total,
+                    "deduplicated_total": snap.deduplicated_total,
+                    "active_jobs": snap.active_jobs,
+                    "recent_completed": snap.recent_completed,
+                    "recent_failed": snap.recent_failed,
                 },
                 "server": {
                     "mode": self.cfg.server.mode,
                     "cache_miss_strategy": self.cfg.server.cache_miss_strategy,
+                    "listen_host": self.cfg.server.listen_host,
+                    "listen_port": self.cfg.server.listen_port,
+                },
+                "gitlab": {
+                    "base_url": self.cfg.gitlab.base_url,
+                    "root_group": self.cfg.gitlab.root_group,
+                    "visibility": self.cfg.gitlab.visibility,
                 },
             }
+            status_for_metrics = 200
             self._send_json(200, payload)
-            self._access_log("request_end", id=req_id, status=200, elapsed_ms=f"{(time.perf_counter() - start) * 1000:.1f}")
+            elapsed = time.perf_counter() - start
+            self.stats.observe_request(method=self.command, target=target_for_metrics, status=status_for_metrics, elapsed_seconds=elapsed)
+            self._access_log("request_end", id=req_id, status=200, elapsed_ms=f"{elapsed * 1000:.1f}")
             return
 
         try:
@@ -144,8 +181,11 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
                 self.cfg.providers.default_scheme,
             )
         except Exception as e:
+            status_for_metrics = 404
             self._send_text(404, f"Unsupported Git cache path: {e}\n")
-            self._access_log("request_end", id=req_id, status=404, error=repr(e), elapsed_ms=f"{(time.perf_counter() - start) * 1000:.1f}")
+            elapsed = time.perf_counter() - start
+            self.stats.observe_request(method=self.command, target=target_for_metrics, status=status_for_metrics, elapsed_seconds=elapsed)
+            self._access_log("request_end", id=req_id, status=404, error=repr(e), elapsed_ms=f"{elapsed * 1000:.1f}")
             return
 
         self._access_log(
@@ -162,22 +202,31 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
         else:
             upstream_url = self._build_target_url(mapping.remote_url, mapping.request_suffix, parsed_req.query, target_kind)
 
+        target_for_metrics = target_kind
         if self.cfg.server.mode == "redirect":
             self._access_log("upstream_redirect", id=req_id, target=target_kind, upstream=self._sanitize_url(upstream_url))
             self._redirect(upstream_url)
-            self._access_log("request_end", id=req_id, status=307, target=target_kind, elapsed_ms=f"{(time.perf_counter() - start) * 1000:.1f}")
+            status_for_metrics = 307
+            elapsed = time.perf_counter() - start
+            self.stats.observe_request(method=self.command, target=target_for_metrics, status=status_for_metrics, elapsed_seconds=elapsed)
+            self._access_log("request_end", id=req_id, status=307, target=target_kind, elapsed_ms=f"{elapsed * 1000:.1f}")
         else:
             status = self._proxy(upstream_url, req_id=req_id, target=target_kind)
-            self._access_log("request_end", id=req_id, status=status, target=target_kind, elapsed_ms=f"{(time.perf_counter() - start) * 1000:.1f}")
+            status_for_metrics = status
+            elapsed = time.perf_counter() - start
+            self.stats.observe_request(method=self.command, target=target_for_metrics, status=status_for_metrics, elapsed_seconds=elapsed)
+            self._access_log("request_end", id=req_id, status=status, target=target_kind, elapsed_ms=f"{elapsed * 1000:.1f}")
 
     def _select_target(self, mapping: RepoMapping, req_id: int) -> TargetKind:
         ready = self.mirrors.gitlab_mirror_ready(mapping)
         if ready:
             if self.cfg.background.enabled and self.cfg.background.refresh_existing and self.mirrors.is_stale(mapping):
                 self.scheduler.submit(mapping, reason="stale-refresh")
+            self.stats.inc_cache("hit")
             self._access_log("cache_hit", id=req_id, remote=mapping.remote_url, mirror=mapping.gitlab_http_url)
             return "gitlab"
 
+        self.stats.inc_cache("miss")
         self._access_log("cache_miss", id=req_id, remote=mapping.remote_url, mirror=mapping.gitlab_http_url)
         if self.cfg.server.cache_miss_strategy == "wait_for_mirror":
             try:
@@ -222,11 +271,13 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
                 self._send_text(413, "Request body too large\n")
                 return 413
             body = self.rfile.read(content_length) if content_length else b""
+            self.stats.add_proxy_bytes(target, "client_to_upstream", len(body or b""))
 
         headers = self._upstream_headers(target)
         if target == "gitlab":
             headers["Authorization"] = basic_auth_header(self.cfg.gitlab.git_http_username, self.cfg.token)
 
+        self.stats.inc_proxy(target)
         self._access_log("upstream_proxy", id=req_id, target=target, method=self.command, upstream=self._sanitize_url(upstream_url))
         request = urllib.request.Request(upstream_url, data=body, headers=headers, method=self.command)
         try:
@@ -240,7 +291,9 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
                 if self.cfg.logging.upstream_headers:
                     self._debug_headers(f"upstream response id={req_id}", resp.headers.items())
                 if self.command != "HEAD":
-                    self._copy_stream(resp)
+                    copied = self._copy_stream(resp)
+                    self.stats.add_proxy_bytes(target, "upstream_to_client", copied)
+                self.stats.observe_proxy_request(target=target, status=int(resp.status))
                 return int(resp.status)
         except urllib.error.HTTPError as e:
             self.send_response(e.code)
@@ -251,10 +304,13 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
             if self.cfg.logging.upstream_headers:
                 self._debug_headers(f"upstream error id={req_id}", e.headers.items())
             if self.command != "HEAD":
-                self._copy_stream(e)
+                copied = self._copy_stream(e)
+                self.stats.add_proxy_bytes(target, "upstream_to_client", copied)
+            self.stats.observe_proxy_request(target=target, status=int(e.code))
             return int(e.code)
         except Exception as e:
             LOG.exception("proxy failed target=%s upstream=%s", target, self._sanitize_url(upstream_url))
+            self.stats.observe_proxy_request(target=target, status=502)
             self._send_text(502, f"Proxy to {target} failed: {e}\n")
             return 502
 
@@ -281,12 +337,23 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
             headers[k] = v
         return headers
 
-    def _copy_stream(self, src) -> None:
+    def _copy_stream(self, src) -> int:
+        total = 0
         while True:
             chunk = src.read(1024 * 256)
             if not chunk:
                 break
             self.wfile.write(chunk)
+            total += len(chunk)
+        return total
+
+    def _send_bytes(self, status: int, payload: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(payload)
 
     def _send_text(self, status: int, text: str) -> None:
         payload = text.encode("utf-8")
@@ -319,10 +386,12 @@ def run_server(cfg: Config) -> None:
     setup_logging(cfg)
     mirrors = MirrorManager(cfg)
     scheduler = MirrorScheduler(cfg, mirrors)
+    stats = ServiceStats()
     server = GitCacheGatewayHTTPServer((cfg.server.listen_host, cfg.server.listen_port), GitCacheGatewayHandler)
     server.cfg = cfg  # type: ignore[attr-defined]
     server.mirrors = mirrors  # type: ignore[attr-defined]
     server.scheduler = scheduler  # type: ignore[attr-defined]
+    server.stats = stats  # type: ignore[attr-defined]
     LOG.info(
         "listening on %s:%s mode=%s cache_miss_strategy=%s mirror_workers=%s max_pending_jobs=%s",
         cfg.server.listen_host,
