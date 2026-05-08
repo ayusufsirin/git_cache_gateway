@@ -1,0 +1,24 @@
+services:
+  git-cache-gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: git-cache-gateway
+    restart: unless-stopped
+    environment:
+      GITCACHE_GATEWAY_CONFIG: /etc/git-cache-gateway/config.toml
+      GITCACHE_GITLAB_TOKEN: ${GITCACHE_GITLAB_TOKEN}
+      # Runtime CA directory. Usually leave this default.
+      GITCACHE_EXTRA_CA_DIR: /etc/git-cache-gateway/ca
+    volumes:
+      - ./config.toml:/etc/git-cache-gateway/config.toml:ro
+      # Runtime CA certs. For build-time pip support, also put the same certs in ../ca before build.
+      - ../ca:/etc/git-cache-gateway/ca:ro
+      - git_cache_gateway_cache:/var/cache/git-cache-gateway
+      - git_cache_gateway_locks:/var/lock/git-cache-gateway
+    ports:
+      - "8080:8080"
+
+volumes:
+  git_cache_gateway_cache:
+  git_cache_gateway_locks:

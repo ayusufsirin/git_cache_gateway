@@ -1,0 +1,18 @@
+services:
+  git-cache-gateway:
+    build: .
+    container_name: git-cache-gateway
+    restart: unless-stopped
+
+    environment:
+      GITCACHE_GATEWAY_CONFIG: /etc/git-cache-gateway/config.toml
+      GITCACHE_GITLAB_TOKEN: ${GITCACHE_GITLAB_TOKEN}
+
+    volumes:
+      - ./config/config.toml:/etc/git-cache-gateway/config.toml:ro
+      - ./ca:/etc/git-cache-gateway/ca:ro
+      - ./data/cache:/var/cache/git-cache-gateway
+      - ./data/locks:/var/lock/git-cache-gateway
+
+    ports:
+      - "8080:8080"
