@@ -321,7 +321,14 @@ class GitLabAPI:
             except GitLabAPIError:
                 raise first_error
 
-    def ensure_empty_project(self, full_path: str, visibility: str) -> GitLabProject:
+    def ensure_empty_project(
+        self,
+        full_path: str,
+        visibility: str,
+        *,
+        default_branch: str | None = None,
+        initialize_with_readme: bool = False,
+    ) -> GitLabProject:
         project = self.get_project(full_path)
         if project is not None:
             return self.ensure_project_visibility(project, visibility)
@@ -337,8 +344,10 @@ class GitLabAPI:
             "path": project_path,
             "namespace_id": namespace.id,
             "visibility": visibility,
-            "initialize_with_readme": False,
+            "initialize_with_readme": initialize_with_readme,
         }
+        if default_branch:
+            payload["default_branch"] = default_branch
         try:
             project = self._create_project(payload, visibility)
         except GitLabAPIError as e:
@@ -352,6 +361,24 @@ class GitLabAPI:
 
     def set_default_branch(self, project_id: int, branch: str) -> None:
         self._request("PUT", f"/projects/{project_id}", data={"default_branch": branch}, ok=(200,))
+
+    def create_branch(self, project_id: int, branch: str, ref: str) -> bool:
+        try:
+            self._request("POST", f"/projects/{project_id}/repository/branches", data={"branch": branch, "ref": ref}, ok=(201,))
+            return True
+        except GitLabAPIError as e:
+            if e.status == 400 and "already exists" in e.body.lower():
+                return False
+            raise
+
+    def delete_branch(self, project_id: int, branch: str) -> None:
+        encoded = quote(branch, safe="")
+        try:
+            self._request("DELETE", f"/projects/{project_id}/repository/branches/{encoded}", ok=(204, 200))
+        except GitLabAPIError as e:
+            if e.status == 404:
+                return
+            raise
 
     def list_project_branches(self, project_id: int) -> list[str]:
         data = self._request("GET", f"/projects/{project_id}/repository/branches?per_page=100")

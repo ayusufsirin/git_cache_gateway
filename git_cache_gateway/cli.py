@@ -260,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.set_defaults(func=cmd_enforce_visibility)
 
     r = sub.add_parser("repair-default-branches", help="repair GitLab default_branch/remote HEAD for existing mirrors")
-    r.add_argument("urls", nargs="*", help="optional remote URLs to repair; if omitted, scans local mirror cache")
+    r.add_argument("urls", nargs="*", help="optional remote URLs to repair; if omitted, scans GitLab mirror projects under root_group")
     r.set_defaults(func=cmd_repair_default_branches)
 
     s = sub.add_parser("serve", help="run the HTTP cache gateway")
