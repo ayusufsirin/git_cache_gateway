@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "git-cache-gateway"
+version = "0.2.2"
+description = "HTTP Git cache gateway backed by internal GitLab mirrors"
+requires-python = ">=3.11"
+authors = [{name = "git-cache-gateway"}]
+dependencies = []
+
+[project.scripts]
+git-cache-gateway = "git_cache_gateway.cli:main"
+
+[tool.setuptools]
+packages = ["git_cache_gateway"]

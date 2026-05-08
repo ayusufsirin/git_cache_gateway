@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtualenv
+.venv/
+venv/
+
+# Runtime config/secrets
+.env
+config/config.toml
+
+# Runtime data
+data/
+*.log
+
+# Build/package
+dist/
+build/
+*.zip
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
