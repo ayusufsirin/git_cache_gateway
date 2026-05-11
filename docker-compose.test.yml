@@ -1,0 +1,10 @@
+services:
+  git-cache-gateway-tests:
+    build:
+      context: .
+      target: test
+    image: git-cache-gateway:test
+    environment:
+      GITCACHE_GATEWAY_CONFIG: /etc/git-cache-gateway/config.toml
+    volumes:
+      - ./ca:/etc/git-cache-gateway/ca:ro

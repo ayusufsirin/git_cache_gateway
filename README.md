@@ -283,6 +283,36 @@ When using Docker Compose, place it in `.env`:
 GITCACHE_GITLAB_TOKEN=YOUR_GITLAB_TOKEN
 ```
 
+
+---
+
+## Run Tests with Docker
+
+The test suite can be run entirely inside Docker. This avoids creating a local Python virtual environment or installing test dependencies on the host.
+
+Run the full test suite:
+
+```bash
+scripts/test-docker.sh
+```
+
+Pass normal `pytest` arguments after the script name:
+
+```bash
+scripts/test-docker.sh -v
+scripts/test-docker.sh tests/test_urlmap.py
+scripts/test-docker.sh -k metrics
+```
+
+The script uses `docker-compose.test.yml`, which builds the `test` target from the project `Dockerfile`. The test image installs the package with the `test` extra:
+
+```bash
+python -m pip install --no-cache-dir ".[test]"
+pytest -q
+```
+
+Company/internal CA certificates placed under the project-root `ca/` directory are also available during the test-image build, so Docker-based tests follow the same CA behavior as the runtime image.
+
 ---
 
 ## Run with Docker
@@ -851,7 +881,7 @@ Before using this with multiple users or CI runners:
 
 ## Version Notes
 
-### v0.2.15
+### v0.2.16
 
 - Added `/failed-jobs` endpoint for recent failed mirror-job history.
 - Added `/retry-failed` endpoint to resubmit recent failed jobs from the running gateway process.

@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS base
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates git-lfs \
@@ -15,6 +15,13 @@ RUN chmod +x /app/scripts/*.sh \
     && /app/scripts/install-ca-certificates.sh /app/ca \
     && python -m pip install --upgrade pip \
     && python -m pip install --no-cache-dir .
+
+FROM base AS test
+
+RUN python -m pip install --no-cache-dir ".[test]"
+CMD ["pytest", "-q"]
+
+FROM base AS runtime
 
 EXPOSE 8080
 ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
