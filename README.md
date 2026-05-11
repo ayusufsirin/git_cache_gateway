@@ -372,6 +372,25 @@ git_cache_gateway_mirror_jobs_rejected_total
 git_cache_gateway_mirror_jobs_deduplicated_total
 ```
 
+### Failed job operations
+
+Recent failed mirror jobs are included in `/statusz`, and can also be queried directly:
+
+```bash
+curl http://localhost:8080/failed-jobs | jq
+curl 'http://localhost:8080/failed-jobs?limit=10' | jq
+```
+
+To retry recent failures in the running gateway process:
+
+```bash
+curl -X POST http://localhost:8080/retry-failed
+curl -X POST 'http://localhost:8080/retry-failed?provider=github.com&limit=5'
+curl -X POST 'http://localhost:8080/retry-failed?url=https%3A%2F%2Fgithub.com%2Fopenssl%2Fopenssl.git'
+```
+
+The retry endpoint uses the in-memory recent failure history of the running process. After a container restart, use `git-cache-gateway ensure <url>` to retry a known repository, or wait for a future persistent state backend.
+
 ---
 
 ## Company / Internal CA Certificates
@@ -758,6 +777,31 @@ git-cache-gateway ensure https://github.com/org/repo.git
 git-cache-gateway enforce-visibility
 ```
 
+### Show recent failed jobs
+
+```bash
+git-cache-gateway failed-jobs
+git-cache-gateway failed-jobs --limit 10
+git-cache-gateway failed-jobs --json
+```
+
+By default, CLI admin commands call `http://127.0.0.1:<listen_port>`, which is ideal inside the gateway container. From another host, pass `--gateway-url` or set `GITCACHE_GATEWAY_ADMIN_URL`:
+
+```bash
+git-cache-gateway failed-jobs --gateway-url http://git-cache.example.local:8080
+```
+
+### Retry recent failed jobs
+
+```bash
+git-cache-gateway retry-failed
+git-cache-gateway retry-failed --provider github.com --limit 5
+git-cache-gateway retry-failed --url https://github.com/openssl/openssl.git
+git-cache-gateway retry-failed --key github.com/openssl/openssl
+```
+
+This retries failures stored in the running gateway process. It does not yet persist history across restarts.
+
 ---
 
 ## Important Behavior
@@ -806,6 +850,13 @@ Before using this with multiple users or CI runners:
 ---
 
 ## Version Notes
+
+### v0.2.15
+
+- Added `/failed-jobs` endpoint for recent failed mirror-job history.
+- Added `/retry-failed` endpoint to resubmit recent failed jobs from the running gateway process.
+- Added `git-cache-gateway failed-jobs` CLI command.
+- Added `git-cache-gateway retry-failed` CLI command with URL/key/provider filters.
 
 ### v0.2.14
 

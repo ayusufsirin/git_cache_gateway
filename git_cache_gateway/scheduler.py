@@ -18,7 +18,7 @@ from .metrics import (
     RecentJobRecord,
 )
 from .mirror import MirrorManager
-from .urlmap import RepoMapping
+from .urlmap import RepoMapping, map_remote_url
 
 LOG = logging.getLogger("git-cache-gateway.scheduler")
 
@@ -221,6 +221,83 @@ class MirrorScheduler:
                 recent_completed=[job.to_dict(now) for job in reversed(self._recent_completed)],
                 recent_failed=[job.to_dict(now) for job in reversed(self._recent_failed)],
             )
+
+
+    def failed_jobs(self, *, limit: int | None = None) -> list[dict[str, Any]]:
+        """Return recent failed mirror jobs, newest first."""
+        now = time.time()
+        with self._lock:
+            jobs = list(reversed(self._recent_failed))
+            if limit is not None and limit > 0:
+                jobs = jobs[:limit]
+            return [job.to_dict(now) for job in jobs]
+
+    def retry_failed(
+        self,
+        *,
+        url: str | None = None,
+        key: str | None = None,
+        provider: str | None = None,
+        limit: int | None = None,
+        reason: str = "manual-retry",
+    ) -> dict[str, Any]:
+        """Resubmit recent failed jobs that match optional filters.
+
+        The scheduler keeps only recent in-memory failures. This operation is
+        intended for the running gateway process via the admin HTTP endpoint.
+        For retrying after a container restart, call `git-cache-gateway ensure`
+        with the desired URL or use a later persistent state backend.
+        """
+        provider = provider.lower() if provider else None
+        with self._lock:
+            candidates = list(reversed(self._recent_failed))
+
+        selected: list[RecentJobRecord] = []
+        seen_remotes: set[str] = set()
+        for job in candidates:
+            if url and job.remote != url:
+                continue
+            if key and job.key != key:
+                continue
+            if provider and not job.key.lower().startswith(provider + "/"):
+                continue
+            if job.remote in seen_remotes:
+                continue
+            selected.append(job)
+            seen_remotes.add(job.remote)
+            if limit is not None and limit > 0 and len(selected) >= limit:
+                break
+
+        submitted = 0
+        not_submitted = 0
+        errors: list[str] = []
+        submitted_jobs: list[dict[str, Any]] = []
+        for job in selected:
+            try:
+                mapping = map_remote_url(
+                    job.remote,
+                    self.cfg.providers.hosts,
+                    self.cfg.gitlab.base_url,
+                    self.cfg.gitlab.root_group,
+                    self.cfg.providers.default_scheme,
+                )
+                ok = self.submit(mapping, reason=reason)
+                if ok:
+                    submitted += 1
+                    submitted_jobs.append({"key": job.key, "remote": job.remote, "reason": reason})
+                else:
+                    not_submitted += 1
+            except Exception as e:
+                not_submitted += 1
+                errors.append(f"{job.remote}: {e!r}")
+
+        return {
+            "matched": len(selected),
+            "submitted": submitted,
+            "not_submitted": not_submitted,
+            "errors": errors,
+            "jobs": submitted_jobs,
+        }
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=False)

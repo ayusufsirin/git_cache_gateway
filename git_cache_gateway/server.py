@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Iterable, Literal
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from . import __version__
 from .config import Config
@@ -95,6 +95,56 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
         safe = {k: _redact_header(k, v) for k, v in headers}
         LOG.debug("%s headers=%s", prefix, safe)
 
+    @staticmethod
+    def _query_one(params: dict[str, list[str]], name: str) -> str | None:
+        values = params.get(name) or []
+        return values[0] if values and values[0] else None
+
+    @staticmethod
+    def _query_int(params: dict[str, list[str]], name: str, *, default: int | None = None) -> int | None:
+        values = params.get(name) or []
+        if not values or not values[0]:
+            return default
+        try:
+            value = int(values[0])
+        except ValueError:
+            return default
+        return value if value > 0 else default
+
+    def _status_payload(self) -> dict[str, object]:
+        snap = self.scheduler.snapshot()
+        return {
+            "ok": True,
+            "version": __version__,
+            "stats": self.stats.snapshot(),
+            "background": {
+                "enabled": self.cfg.background.enabled,
+                "mirror_workers": self.cfg.background.mirror_workers,
+                "max_pending_jobs": self.cfg.background.max_pending_jobs,
+                "active": snap.active,
+                "queued_or_running": snap.queued_or_running,
+                "submitted_total": snap.submitted_total,
+                "completed_total": snap.completed_total,
+                "failed_total": snap.failed_total,
+                "rejected_total": snap.rejected_total,
+                "deduplicated_total": snap.deduplicated_total,
+                "active_jobs": snap.active_jobs,
+                "recent_completed": snap.recent_completed,
+                "recent_failed": snap.recent_failed,
+            },
+            "server": {
+                "mode": self.cfg.server.mode,
+                "cache_miss_strategy": self.cfg.server.cache_miss_strategy,
+                "listen_host": self.cfg.server.listen_host,
+                "listen_port": self.cfg.server.listen_port,
+            },
+            "gitlab": {
+                "base_url": self.cfg.gitlab.base_url,
+                "root_group": self.cfg.gitlab.root_group,
+                "visibility": self.cfg.gitlab.visibility,
+            },
+        }
+
     def _handle_request(self) -> None:
         req_id = next(_REQUEST_COUNTER)
         start = time.perf_counter()
@@ -133,40 +183,43 @@ class GitCacheGatewayHandler(BaseHTTPRequestHandler):
             return
 
         if parsed_req.path in {"/statusz", "/jobs"}:
-            snap = self.scheduler.snapshot()
-            payload = {
-                "ok": True,
-                "version": __version__,
-                "stats": self.stats.snapshot(),
-                "background": {
-                    "enabled": self.cfg.background.enabled,
-                    "mirror_workers": self.cfg.background.mirror_workers,
-                    "max_pending_jobs": self.cfg.background.max_pending_jobs,
-                    "active": snap.active,
-                    "queued_or_running": snap.queued_or_running,
-                    "submitted_total": snap.submitted_total,
-                    "completed_total": snap.completed_total,
-                    "failed_total": snap.failed_total,
-                    "rejected_total": snap.rejected_total,
-                    "deduplicated_total": snap.deduplicated_total,
-                    "active_jobs": snap.active_jobs,
-                    "recent_completed": snap.recent_completed,
-                    "recent_failed": snap.recent_failed,
-                },
-                "server": {
-                    "mode": self.cfg.server.mode,
-                    "cache_miss_strategy": self.cfg.server.cache_miss_strategy,
-                    "listen_host": self.cfg.server.listen_host,
-                    "listen_port": self.cfg.server.listen_port,
-                },
-                "gitlab": {
-                    "base_url": self.cfg.gitlab.base_url,
-                    "root_group": self.cfg.gitlab.root_group,
-                    "visibility": self.cfg.gitlab.visibility,
-                },
-            }
+            payload = self._status_payload()
             status_for_metrics = 200
             self._send_json(200, payload)
+            elapsed = time.perf_counter() - start
+            self.stats.observe_request(method=self.command, target=target_for_metrics, status=status_for_metrics, elapsed_seconds=elapsed)
+            self._access_log("request_end", id=req_id, status=200, elapsed_ms=f"{elapsed * 1000:.1f}")
+            return
+
+        if parsed_req.path in {"/failed-jobs", "/admin/failed-jobs"}:
+            params = parse_qs(parsed_req.query)
+            limit = self._query_int(params, "limit", default=25)
+            payload = {"ok": True, "version": __version__, "failed_jobs": self.scheduler.failed_jobs(limit=limit)}
+            status_for_metrics = 200
+            self._send_json(200, payload)
+            elapsed = time.perf_counter() - start
+            self.stats.observe_request(method=self.command, target=target_for_metrics, status=status_for_metrics, elapsed_seconds=elapsed)
+            self._access_log("request_end", id=req_id, status=200, elapsed_ms=f"{elapsed * 1000:.1f}")
+            return
+
+        if parsed_req.path in {"/retry-failed", "/admin/retry-failed"}:
+            if self.command not in {"POST", "GET"}:
+                status_for_metrics = 405
+                self._send_text(405, "retry-failed supports GET or POST\n")
+                elapsed = time.perf_counter() - start
+                self.stats.observe_request(method=self.command, target=target_for_metrics, status=status_for_metrics, elapsed_seconds=elapsed)
+                self._access_log("request_end", id=req_id, status=405, elapsed_ms=f"{elapsed * 1000:.1f}")
+                return
+            params = parse_qs(parsed_req.query)
+            result = self.scheduler.retry_failed(
+                url=self._query_one(params, "url"),
+                key=self._query_one(params, "key"),
+                provider=self._query_one(params, "provider"),
+                limit=self._query_int(params, "limit", default=None),
+                reason=self._query_one(params, "reason") or "manual-retry",
+            )
+            status_for_metrics = 200
+            self._send_json(200, {"ok": True, "version": __version__, "retry": result})
             elapsed = time.perf_counter() - start
             self.stats.observe_request(method=self.command, target=target_for_metrics, status=status_for_metrics, elapsed_seconds=elapsed)
             self._access_log("request_end", id=req_id, status=200, elapsed_ms=f"{elapsed * 1000:.1f}")

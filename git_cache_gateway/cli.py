@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import shutil
 import sys
+import urllib.request
+from urllib.parse import urlencode
 from pathlib import Path
 from urllib.parse import quote
 
@@ -136,6 +140,84 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 
+
+
+def _gateway_admin_url(cfg, override: str | None = None) -> str:
+    """Return the HTTP base URL used by CLI admin commands.
+
+    The CLI may run inside the gateway container, where 127.0.0.1:<port> is the
+    most reliable default. Operators can override with --gateway-url or
+    GITCACHE_GATEWAY_ADMIN_URL when running from another host.
+    """
+    base = override or os.environ.get("GITCACHE_GATEWAY_ADMIN_URL")
+    if base:
+        return base.rstrip("/")
+    return f"http://127.0.0.1:{cfg.server.listen_port}"
+
+
+def _http_json(method: str, base_url: str, path: str, params: dict[str, str | int | None] | None = None):
+    params = {k: v for k, v in (params or {}).items() if v is not None and v != ""}
+    query = urlencode(params)
+    url = base_url.rstrip("/") + path + (("?" + query) if query else "")
+    data = b"" if method.upper() == "POST" else None
+    req = urllib.request.Request(url, data=data, method=method.upper())
+    with urllib.request.urlopen(req, timeout=30) as resp:  # nosec - admin CLI endpoint selected by operator
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _print_json(payload) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def cmd_failed_jobs(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    base = _gateway_admin_url(cfg, args.gateway_url)
+    payload = _http_json("GET", base, "/failed-jobs", {"limit": args.limit})
+    if args.json:
+        _print_json(payload)
+        return 0
+    jobs = payload.get("failed_jobs", [])
+    print(f"failed_jobs={len(jobs)}")
+    for job in jobs:
+        print(f"- key={job.get('key')} remote={job.get('remote')} reason={job.get('reason')} age_seconds={job.get('age_seconds'):.1f}")
+        if job.get("error"):
+            print(f"  error={job.get('error')}")
+    return 0
+
+
+def cmd_retry_failed(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    base = _gateway_admin_url(cfg, args.gateway_url)
+    payload = _http_json(
+        "POST",
+        base,
+        "/retry-failed",
+        {
+            "url": args.url,
+            "key": args.key,
+            "provider": args.provider,
+            "limit": args.limit,
+            "reason": args.reason,
+        },
+    )
+    if args.json:
+        _print_json(payload)
+        return 0
+    retry = payload.get("retry", {})
+    for key in ("matched", "submitted", "not_submitted"):
+        print(f"{key}={retry.get(key, 0)}")
+    errors = retry.get("errors") or []
+    if errors:
+        print("errors:")
+        for err in errors:
+            print(f"  - {err}")
+    jobs = retry.get("jobs") or []
+    if jobs:
+        print("jobs:")
+        for job in jobs:
+            print(f"  - key={job.get('key')} remote={job.get('remote')} reason={job.get('reason')}")
+    return 0 if not errors else 1
+
 def cmd_enforce_visibility(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     visibility = args.visibility or cfg.gitlab.visibility
@@ -262,6 +344,22 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("repair-default-branches", help="repair GitLab default_branch/remote HEAD for existing mirrors")
     r.add_argument("urls", nargs="*", help="optional remote URLs to repair; if omitted, scans GitLab mirror projects under root_group")
     r.set_defaults(func=cmd_repair_default_branches)
+
+    fj = sub.add_parser("failed-jobs", help="show recent failed mirror jobs from the running gateway")
+    fj.add_argument("--gateway-url", help="gateway admin base URL; default is GITCACHE_GATEWAY_ADMIN_URL or http://127.0.0.1:<listen_port>")
+    fj.add_argument("--limit", type=int, default=25)
+    fj.add_argument("--json", action="store_true")
+    fj.set_defaults(func=cmd_failed_jobs)
+
+    rf = sub.add_parser("retry-failed", help="retry recent failed mirror jobs in the running gateway")
+    rf.add_argument("--gateway-url", help="gateway admin base URL; default is GITCACHE_GATEWAY_ADMIN_URL or http://127.0.0.1:<listen_port>")
+    rf.add_argument("--url", help="retry only this remote URL")
+    rf.add_argument("--key", help="retry only this scheduler key, e.g. github.com/openssl/openssl")
+    rf.add_argument("--provider", help="retry failed jobs for one provider, e.g. github.com")
+    rf.add_argument("--limit", type=int, help="maximum number of failed jobs to retry")
+    rf.add_argument("--reason", default="manual-retry")
+    rf.add_argument("--json", action="store_true")
+    rf.set_defaults(func=cmd_retry_failed)
 
     s = sub.add_parser("serve", help="run the HTTP cache gateway")
     s.set_defaults(func=cmd_serve)
