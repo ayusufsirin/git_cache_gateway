@@ -250,6 +250,32 @@ class MirrorManager:
                 heads.append(branch)
         return heads
 
+    def _upstream_default_branch(self, mapping: RepoMapping) -> str | None:
+        """Return the upstream advertised HEAD branch without using local cache.
+
+        This is used by default-branch repair when the local bare mirror cache
+        under /data has been deleted. It is intentionally best-effort: offline
+        gateways or private upstreams without credentials should still be able
+        to repair from GitLab-local branch names using the normal main/master
+        fallback below.
+        """
+        result = run(
+            self._git_cmd("ls-remote", "--symref", mapping.remote_url, "HEAD"),
+            check=False,
+            env_extra=self._upstream_git_env(),
+        )
+        if result.returncode != 0:
+            return None
+
+        prefix = "ref: refs/heads/"
+        suffix = "\tHEAD"
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith(prefix) and line.endswith(suffix):
+                branch = line[len(prefix) : -len(suffix)].strip()
+                return branch or None
+        return None
+
     def _gitlab_advertised_head(self, mapping: RepoMapping) -> str | None:
         """Return the Git smart-HTTP advertised HEAD branch, if any."""
         repo_url = inject_basic_auth(
@@ -314,12 +340,19 @@ class MirrorManager:
         mapping: RepoMapping,
         project_default: str | None,
         gitlab_heads: list[str],
+        *,
+        use_upstream: bool = True,
     ) -> str | None:
         if not gitlab_heads:
             return None
 
         if project_default in gitlab_heads:
             return project_default
+
+        if use_upstream:
+            upstream_default = self._upstream_default_branch(mapping)
+            if upstream_default in gitlab_heads:
+                return upstream_default
 
         local_default = self._local_mirror_default_branch(self.local_mirror_dir(mapping))
         if local_default in gitlab_heads:
@@ -331,7 +364,7 @@ class MirrorManager:
 
         return gitlab_heads[0]
 
-    def repair_gitlab_default_branch(self, mapping: RepoMapping, project=None) -> bool:
+    def repair_gitlab_default_branch(self, mapping: RepoMapping, project=None, *, use_upstream: bool = True) -> bool:
         """Ensure GitLab advertises a cloneable HEAD for this mirror."""
         if project is None:
             project = self.gitlab.get_project(mapping.gitlab_full_path)
@@ -339,7 +372,7 @@ class MirrorManager:
             return False
 
         heads = self._gitlab_mirror_heads(mapping)
-        desired = self._choose_gitlab_default_branch(mapping, project.default_branch, heads)
+        desired = self._choose_gitlab_default_branch(mapping, project.default_branch, heads, use_upstream=use_upstream)
         if not desired:
             return False
 
@@ -597,12 +630,20 @@ class MirrorManager:
         """Blocking ensure for CLI and optional wait_for_mirror server mode."""
         return self.mirror_once(mapping, reason="sync-ensure")
 
-    def repair_default_branches(self, mappings: Iterable[RepoMapping] | None = None) -> dict[str, object]:
+    def repair_default_branches(
+        self,
+        mappings: Iterable[RepoMapping] | None = None,
+        *,
+        use_upstream: bool = True,
+    ) -> dict[str, object]:
         """Repair default_branch and advertised Git HEAD for existing mirrors.
 
         When no explicit mappings are supplied, scan GitLab projects under the
         configured mirror root group. This does not depend on the local /data
         mirror cache, so it still works after the cache directory is deleted.
+
+        Set use_upstream=False for offline repairs. In that mode, the repair
+        uses only the branches already present in the internal GitLab mirror.
         """
         result: dict[str, object] = {
             "seen": 0,
@@ -626,7 +667,7 @@ class MirrorManager:
 
                 advertised_before = self._gitlab_advertised_head(mapping)
                 heads = self._gitlab_mirror_heads(mapping)
-                desired = self._choose_gitlab_default_branch(mapping, project.default_branch, heads)
+                desired = self._choose_gitlab_default_branch(mapping, project.default_branch, heads, use_upstream=use_upstream)
                 if not desired:
                     result["skipped"] = int(result["skipped"]) + 1
                     errors.append(f"skip no_heads {mapping.gitlab_full_path}")
@@ -636,7 +677,7 @@ class MirrorManager:
                     result["already_ok"] = int(result["already_ok"]) + 1
                     continue
 
-                ok = self.repair_gitlab_default_branch(mapping, project=project)
+                ok = self.repair_gitlab_default_branch(mapping, project=project, use_upstream=use_upstream)
                 advertised_after = self._gitlab_advertised_head(mapping) if ok else None
                 if ok and advertised_after == desired:
                     result["repaired"] = int(result["repaired"]) + 1
